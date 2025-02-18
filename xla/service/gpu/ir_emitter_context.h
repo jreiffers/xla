@@ -54,6 +54,25 @@ using CollectivesAsyncEvents =
                                      std::pair<bool, uint64_t>>,
                         std::shared_ptr<NcclCollectiveThunk::AsyncEvents>>;
 
+// Records the hierarchy of instructions that are being emitted.
+// TODO(jreiffers): Give this a better name or figure out a way to not need it.
+class IrEmitterScope {
+ public:
+  // Pushes a new instruction to the stack.
+  void Push(const HloInstruction* instruction) {
+    stack_.push_back(instruction);
+  }
+
+  void Pop() { stack_.pop_back(); }
+
+  absl::Span<const HloInstruction* const> instructions() const {
+    return stack_;
+  }
+
+ private:
+  std::vector<const HloInstruction*> stack_;
+};
+
 // IrEmitterContext encapsulates common (mutable and immutable) data structures
 // used by both IrEmitterNested and IrEmitterUnnested, such as the buffer
 // assignment and the name uniquer.
@@ -65,7 +84,8 @@ class IrEmitterContext {
                    std::string platform_name,
                    const se::DeviceDescription& gpu_device_info,
                    mlir::MLIRContext* mlir_context, llvm::Module* llvm_module,
-                   llvm::Module* llvm_module_constants, bool emit_kernels)
+                   llvm::Module* llvm_module_constants, bool emit_kernels,
+                   IrEmitterScope* scope)
       : hlo_module_(hlo_module),
         buffer_assignment_(buffer_assignment),
         execution_stream_assignment_(execution_stream_assignment),
@@ -74,7 +94,8 @@ class IrEmitterContext {
         mlir_context_(mlir_context),
         llvm_module_(llvm_module),
         llvm_module_constants_(llvm_module_constants),
-        emit_kernels_(emit_kernels) {}
+        emit_kernels_(emit_kernels),
+        scope_(scope) {}
   // Disallow copy and assign.
   IrEmitterContext(const IrEmitterContext&) = delete;
   IrEmitterContext& operator=(const IrEmitterContext&) = delete;
@@ -132,6 +153,8 @@ class IrEmitterContext {
 
   bool emit_kernels() const { return emit_kernels_; }
 
+  IrEmitterScope* scope() const { return scope_; }
+
  private:
   const HloModule* hlo_module_;
   const BufferAssignment* buffer_assignment_;
@@ -149,6 +172,8 @@ class IrEmitterContext {
 
   // We should not emit kernels when loading thunks from a compilation result.
   const bool emit_kernels_;
+
+  IrEmitterScope* scope_;
 };
 
 }  // namespace gpu

@@ -55,11 +55,13 @@ class HloFusionInfo : public FusionInfo {
   HloFusionInfo(const HloFusionAnalysis& analysis,
                 const HloFusionInstruction* instr,
                 const BufferAssignment* buffer_assignment,
-                const CallGraph& call_graph)
+                const CallGraph& call_graph,
+                const IrEmitterScope& scope,)
       : FusionInfo(analysis),
         instr_(instr),
         buffer_assignment_(buffer_assignment),
-        call_graph_(call_graph) {}
+        call_graph_(call_graph),
+        scope_(scope) {}
 
   bool CanEmitDynamicUpdateSliceInPlace() const override;
   std::optional<std::unique_ptr<FusionInterface>> GetCopyFusion()
@@ -70,6 +72,7 @@ class HloFusionInfo : public FusionInfo {
   const HloFusionInstruction* instr_;
   const BufferAssignment* buffer_assignment_;
   const CallGraph& call_graph_;
+  const IrEmitterScope& scope_;
 };
 
 class PreBufferAssignmentFusionInfo : public FusionInfo {

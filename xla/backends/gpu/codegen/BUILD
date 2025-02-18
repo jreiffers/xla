@@ -266,6 +266,7 @@ cc_library(
         ":cudnn",
         ":custom",
         ":fusion_emitter",
+        "//xla:literal_util",
         "//xla:shape_util",
         "//xla/backends/gpu/codegen/emitters:concatenate",
         "//xla/backends/gpu/codegen/emitters:in_place_dynamic_update_slice",

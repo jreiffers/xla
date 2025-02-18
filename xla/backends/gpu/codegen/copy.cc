@@ -73,5 +73,30 @@ absl::StatusOr<FusionEmissionResult> MemcpyFusion::Emit(
   return result;
 }
 
+absl::StatusOr<FusionEmissionResult> DynamicMemcpyFusion::Emit(
+    IrEmitterContext& ir_emitter_context,
+    const HloFusionInstruction& fusion) const {
+  CHECK_EQ(analysis_.fusion_roots().size(), 1);
+
+  const auto* root = &analysis_.fusion_roots()[0].instruction();
+  const HloInstruction* src_instr =
+      fusion.operand(root->operand(0)->parameter_number());
+  TF_ASSIGN_OR_RETURN(BufferAllocation::Slice src_buffer,
+                      buffer_assignment_->GetUniqueSlice(src_instr, {}));
+  TF_ASSIGN_OR_RETURN(BufferAllocation::Slice dst_buffer,
+                      buffer_assignment_->GetUniqueSlice(&fusion, {}));
+
+  FusionEmissionResult result;
+  if (src_buffer != dst_buffer) {
+    result.thunks.emplace_back(std::make_unique<DynamicMemcpyThunk>(
+        Thunk::ThunkInfo::WithProfileAnnotation(&fusion),
+        /*source_buffer=*/src_buffer,
+        /*destination_buffer=*/dst_buffer,
+        /*mem_size=*/dst_buffer.size(),
+        /*descriptor=*/descriptor_));
+  }
+  return result;
+}
+
 }  // namespace gpu
 }  // namespace xla

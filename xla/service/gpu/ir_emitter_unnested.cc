@@ -30,6 +30,7 @@ limitations under the License.
 #include <variant>
 #include <vector>
 
+#include "absl/cleanup/cleanup.h"
 #include "absl/container/flat_hash_map.h"
 #include "absl/container/flat_hash_set.h"
 #include "absl/container/inlined_vector.h"
@@ -1548,7 +1549,7 @@ absl::Status IrEmitterUnnested::EmitFusion(const HloFusionInstruction* instr) {
       /*fusion_info=*/HloFusionInfo(
           /*analysis=*/fusion_analysis, instr,
           /*buffer_assignment=*/&ir_emitter_context_->buffer_assignment(),
-          /*call_graph=*/*call_graph_));
+          /*call_graph=*/*call_graph_, *ir_emitter_context_->scope()));
   TF_ASSIGN_OR_RETURN(auto result, emitter->Emit(*ir_emitter_context_, *instr));
 
   const ExecutionStreamAssignment& stream_assignment =
@@ -2597,6 +2598,9 @@ std::optional<const HloInstruction*> GetCollectiveHeroForDynamicSliceFusion(
 
 absl::Status IrEmitterUnnested::EmitHloInstruction(
     const HloInstruction* instr) {
+  ir_emitter_context_->scope()->Push(instr);
+  auto cleanup =
+      absl::MakeCleanup([&]() { ir_emitter_context_->scope()->Pop(); });
   switch (instr->opcode()) {
     case HloOpcode::kAllGatherDone:
       return EmitNcclAsyncDone(Thunk::kNcclAllGatherDone, instr);
