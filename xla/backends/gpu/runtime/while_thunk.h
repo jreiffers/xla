@@ -52,7 +52,7 @@ namespace gpu {
 class WhileThunk : public Thunk {
  public:
   // Constructs a WhileThunk to compute while instruction 'hlo'.
-  WhileThunk(ThunkInfo thunk_info,
+  WhileThunk(ThunkInfo thunk_info, const HloInstruction* loop,
              const BufferAllocation::Slice& condition_result_buffer_index,
              std::unique_ptr<SequentialThunk> condition_thunk_sequence,
              std::unique_ptr<SequentialThunk> body_thunk_sequence,
@@ -82,10 +82,13 @@ class WhileThunk : public Thunk {
   // Implementation relies on thread local storage, be careful when call it from
   // code running on multiple threads.
   static absl::StatusOr<int64_t> CurrentLoopIteration(int64_t depth = 0);
+  static absl::StatusOr<int64_t> CurrentLoopIteration(
+      const HloInstruction* while_instr);
 
   void ForAllThunks(absl::FunctionRef<void(const Thunk*)> fn) const override;
 
  private:
+  const HloInstruction* loop_;
   const BufferAllocation::Slice condition_result_buffer_index_;
   std::unique_ptr<SequentialThunk> condition_thunk_sequence_;
   std::unique_ptr<SequentialThunk> body_thunk_sequence_;

@@ -43,31 +43,49 @@ namespace gpu {
 using ::tsl::profiler::TraceMe;
 using ::tsl::profiler::TraceMeEncode;
 
-static std::list<int64_t>& LoopCounters() {
+struct RunningLoop {
+  const HloInstruction* loop_instr;
+  int64_t counter;
+};
+
+static std::list<RunningLoop>& RunningLoops() {
   // TODO(b/343294327): Do not rely on thread-local storage.
-  static thread_local std::list<int64_t> loop_counters;
-  return loop_counters;
+  static thread_local std::list<RunningLoop> loops;
+  return loops;
 }
 
 absl::StatusOr<int64_t> WhileThunk::CurrentLoopIteration(int64_t depth) {
-  if (depth >= LoopCounters().size()) {
+  if (depth >= RunningLoops().size()) {
     return absl::InvalidArgumentError(absl::StrFormat(
         "Loop depth %d is greater than the number of tracked loops %d", depth,
-        LoopCounters().size()));
+        RunningLoops().size()));
   }
 
-  auto counter = LoopCounters().begin();
-  std::advance(counter, depth);
-  return *counter;
+  auto loop = RunningLoops().begin();
+  std::advance(loop, depth);
+  return loop->counter;
+}
+
+absl::StatusOr<int64_t> WhileThunk::CurrentLoopIteration(
+    const HloInstruction* while_instr) {
+  for (const auto& loop : RunningLoops()) {
+    if (loop.loop_instr == while_instr) {
+      return loop.counter;
+    }
+  }
+
+  return absl::InvalidArgumentError(
+      absl::StrFormat("Loop %s is not currently running", while_instr->name()));
 }
 
 WhileThunk::WhileThunk(
-    ThunkInfo thunk_info,
+    ThunkInfo thunk_info, const HloInstruction* loop,
     const BufferAllocation::Slice& condition_result_buffer_index,
     std::unique_ptr<SequentialThunk> condition_thunk_sequence,
     std::unique_ptr<SequentialThunk> body_thunk_sequence,
     std::optional<int64_t> trip_count)
     : Thunk(Kind::kWhile, thunk_info),
+      loop_(loop),
       condition_result_buffer_index_(condition_result_buffer_index),
       condition_thunk_sequence_(std::move(condition_thunk_sequence)),
       body_thunk_sequence_(std::move(body_thunk_sequence)),
@@ -98,8 +116,10 @@ absl::Status WhileThunk::Initialize(const InitializeParams& params) {
 absl::Status WhileThunk::ExecuteOnStream(const ExecuteParams& params) {
   auto& stream = *params.stream;
 
-  int64_t& iter = LoopCounters().emplace_front();
-  absl::Cleanup cleanup = [&] { LoopCounters().pop_front(); };
+  RunningLoop& loop = RunningLoops().emplace_front();
+  loop.loop_instr = loop_;
+  int64_t& iter = loop.counter;
+  absl::Cleanup cleanup = [&] { RunningLoops().pop_front(); };
 
   se::DeviceMemoryBase condition_result_data =
       params.buffer_allocations->GetDeviceAddress(

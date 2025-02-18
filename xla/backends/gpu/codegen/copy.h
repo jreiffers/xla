@@ -24,6 +24,7 @@ limitations under the License.
 #include "xla/service/buffer_assignment.h"
 #include "xla/service/gpu/hlo_fusion_analysis.h"
 #include "xla/service/gpu/ir_emitter_context.h"
+#include "xla/backends/gpu/runtime/copy_thunk.h"
 
 namespace xla {
 namespace gpu {
@@ -43,6 +44,29 @@ class MemcpyFusion : public FusionInterface {
  private:
   const HloFusionAnalysis& analysis_;
   const BufferAssignment* buffer_assignment_;
+};
+
+// Special case of a fusion consisting only of instructions that can be
+// implemented using `memcpy`s. The difference between this fusion and
+// `MemcpyFusion` is that here we allow `memcpy`s that have dynamic offsets
+// (e.g. dynamic-slice in a while loop).
+class DynamicMemcpyFusion : public FusionInterface {
+ public:
+  DynamicMemcpyFusion(const HloFusionAnalysis& analysis,
+                      const BufferAssignment* buffer_assignment,
+                      DynamicMemcpyThunk::MemcpyDescriptor descriptor)
+      : analysis_(analysis),
+        buffer_assignment_(buffer_assignment),
+        descriptor_(std::move(descriptor)) {}
+
+  absl::StatusOr<FusionEmissionResult> Emit(
+      IrEmitterContext& ir_emitter_context,
+      const HloFusionInstruction& fusion) const final;
+
+ private:
+  const HloFusionAnalysis& analysis_;
+  const BufferAssignment* buffer_assignment_;
+  DynamicMemcpyThunk::MemcpyDescriptor descriptor_;
 };
 
 }  // namespace gpu

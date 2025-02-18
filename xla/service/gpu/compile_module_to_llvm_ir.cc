@@ -231,11 +231,12 @@ absl::StatusOr<CompileModuleResults> CompileModuleToLlvmIr(
     return absl::StrFormat("XlaEmitLlvmIr:#module=%s,program_id=%d#",
                            hlo_module->name(), hlo_module->unique_id());
   });
+  IrEmitterScope scope;
   IrEmitterContext ir_emitter_context(
       hlo_module, results.buffer_assignment.get(),
       results.execution_stream_assignment.get(), platform_name, gpu_device_info,
       mlir_context.get(), results.llvm_module.get(),
-      results.llvm_module_constants.get(), /*emit_kernels=*/true);
+      results.llvm_module_constants.get(), /*emit_kernels=*/true, &scope);
 
   if (use_cache) {
     TF_RETURN_IF_ERROR(LoadCache(ir_emitter_context, cache_file_path));

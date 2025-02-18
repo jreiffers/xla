@@ -30,6 +30,7 @@ limitations under the License.
 #include <variant>
 #include <vector>
 
+#include "absl/cleanup/cleanup.h"
 #include "absl/container/flat_hash_map.h"
 #include "absl/container/flat_hash_set.h"
 #include "absl/container/inlined_vector.h"
@@ -1543,7 +1544,8 @@ absl::Status IrEmitterUnnested::EmitFusion(const HloFusionInstruction* instr) {
       HloFusionAnalysis::Create(*instr, device_info);
   VLOG(3) << "IrEmitterUnnested::EmitFusion:start";
   std::unique_ptr<FusionInterface> emitter = GetFusionEmitter(HloFusionInfo(
-      fusion_analysis, instr, &ir_emitter_context_->buffer_assignment()));
+      fusion_analysis, instr, &ir_emitter_context_->buffer_assignment(),
+      *ir_emitter_context_->scope()));
   TF_ASSIGN_OR_RETURN(auto result, emitter->Emit(*ir_emitter_context_, *instr));
 
   const ExecutionStreamAssignment& stream_assignment =
@@ -2323,7 +2325,7 @@ absl::StatusOr<std::unique_ptr<Thunk>> IrEmitterUnnested::BuildWhileThunk(
   body_thunk_info.profile_annotation += "_body";
 
   return std::unique_ptr<Thunk>(new WhileThunk(
-      thunk_info, pred,
+      thunk_info, instr, pred,
       ir_emitter_condition->ConsumeThunkSequence(cond_thunk_info),
       ir_emitter_body->ConsumeThunkSequence(body_thunk_info), trip_count));
 }
@@ -2576,6 +2578,9 @@ absl::Status IrEmitterUnnested::EmitRecvDoneThunk(
 
 absl::Status IrEmitterUnnested::EmitHloInstruction(
     const HloInstruction* instr) {
+  ir_emitter_context_->scope()->Push(instr);
+  auto cleanup =
+      absl::MakeCleanup([&]() { ir_emitter_context_->scope()->Pop(); });
   switch (instr->opcode()) {
     case HloOpcode::kAllGatherDone:
       return EmitNcclAsyncDone(Thunk::kNcclAllGatherDone, instr);
