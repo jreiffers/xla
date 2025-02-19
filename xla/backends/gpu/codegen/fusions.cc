@@ -141,7 +141,17 @@ std::optional<WhileLoopSpec> GetDefiningWhileLoop(
         if (unique_param != instr->while_body()->parameter_instruction(0)) {
           return false;
         }
-        if (unique_gte->tuple_index() != GetLoopInductionVarTupleIdx(instr)) {
+
+        auto config = instr->backend_config<xla::WhileLoopBackendConfig>();
+        if (!config.ok()) {
+          return false;
+        }
+        if (!config->has_known_trip_count() || !config->has_known_init_step() ||
+            !config->has_known_induction_variable()) {
+          return false;
+        }
+        if (unique_gte->tuple_index() !=
+            config->known_induction_variable().tuple_index()) {
           return false;
         }
         return true;
