@@ -224,25 +224,34 @@ absl::Status DynamicMemcpyThunk::ExecuteOnStream(const ExecuteParams& params) {
   HloEvaluator evaluator(/*max_loop_iterations=*/0);
   int64_t src_offset = descriptor_.src_byte_static_offset;
   for (const auto& offset : descriptor_.src_dynamic_offsets) {
+    TF_ASSIGN_OR_RETURN(
+        auto config,
+        offset.while_loop->backend_config<xla::WhileLoopBackendConfig>());
+
+    TF_RET_CHECK(config.has_known_init_step());
     TF_ASSIGN_OR_RETURN(int64_t iteration,
                         WhileThunk::CurrentLoopIteration(offset.while_loop));
+    int64_t induction_variable = config.known_init_step().init() +
+                                 iteration * config.known_init_step().step();
 
-    Literal iteration_literal(offset.induction_variable->shape());
-    TF_RETURN_IF_ERROR(iteration_literal.SetIntegralAsS64({}, iteration));
+    Literal induction_variable_literal(offset.induction_variable->shape());
+    TF_RETURN_IF_ERROR(
+        induction_variable_literal.SetIntegralAsS64({}, induction_variable));
     TF_ASSIGN_OR_RETURN(
-        Literal offset_value,
+        Literal array_index_literal,
         evaluator.EvaluateWithSubstitutions(
-            offset.offset, {{offset.induction_variable, &iteration_literal}},
-            true));
+            offset.offset,
+            {{offset.induction_variable, &induction_variable_literal}}, true));
 
-    std::optional<int64_t> offset_value_int =
-        LiteralUtil::LiteralAsScalarInt64(offset_value);
-    if (!offset_value_int) {
+    std::optional<int64_t> array_index =
+        LiteralUtil::LiteralAsScalarInt64(array_index_literal);
+    if (!array_index) {
       return absl::InternalError("Failed to evaluate offset");
     }
 
-    VLOG(3) << "Iteration index " << index << " resulted in array index " << *offset_value_int << ".";
-    src_offset += *offset_value_int * offset.byte_stride;
+    VLOG(3) << "Iteration index " << index << " resulted in array index "
+            << *array_index << ".";
+    src_offset += *array_index * offset.byte_stride;
   }
 
   auto src_with_offset = source_data.GetByteSlice(src_offset, mem_size_);
