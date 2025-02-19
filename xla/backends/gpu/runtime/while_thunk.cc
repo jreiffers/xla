@@ -121,10 +121,6 @@ absl::Status WhileThunk::ExecuteOnStream(const ExecuteParams& params) {
   int64_t& iter = loop.counter;
   absl::Cleanup cleanup = [&] { RunningLoops().pop_front(); };
 
-  se::DeviceMemoryBase condition_result_data =
-      params.buffer_allocations->GetDeviceAddress(
-          condition_result_buffer_index_);
-
   if (trip_count_.has_value()) {
     VLOG(2) << "Executing WhileThunk for " << *trip_count_ << " iterations";
     for (iter = 0; iter < trip_count_; ++iter) {
@@ -133,6 +129,10 @@ absl::Status WhileThunk::ExecuteOnStream(const ExecuteParams& params) {
     }
     return absl::OkStatus();
   }
+
+  se::DeviceMemoryBase condition_result_data =
+      params.buffer_allocations->GetDeviceAddress(
+          condition_result_buffer_index_);
 
   // Get memory allocation for copying condition result from device.
   bool* condition_result = [&] {
