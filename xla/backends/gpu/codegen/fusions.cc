@@ -79,27 +79,36 @@ struct WhileLoopSpec {
 
 // TODO(jreiffers): Move this to copy.cc?
 std::optional<WhileLoopSpec> GetDefiningWhileLoop(
-    const IrEmitterScope& scope, const HloFusionInstruction* fusion,
+    const IrEmitterCallStack& call_stack, const HloFusionInstruction* fusion,
     const HloInstruction* parameter) {
-  if (scope.instructions().empty()) {
+  if (call_stack.instructions().empty()) {
     return std::nullopt;
   }
 
   VLOG(5) << "Looking for defining while loop of " << parameter->name()
           << " in " << fusion->name();
 
-  // Get out of the fusion.
-  if (parameter->opcode() != HloOpcode::kParameter) {
+  // Walk up the call stack, tracking the origin of `parameter`.
+  const HloInstruction* argument = parameter;
+  auto call_stack_it = call_stack.instructions().rbegin();
+  auto call_stack_end = call_stack.instructions().rend();
+  for (; call_stack_it != call_stack.instructions().rend() &&
+         argument->opcode() == HloOpcode::kParameter &&
+         ((*call_stack_it)->opcode() == HloOpcode::kFusion ||
+          (*call_stack_it)->opcode() == HloOpcode::kAsyncStart ||
+          (*call_stack_it)->opcode() == HloOpcode::kCall);
+       ++call_stack_it) {
+    argument = (*call_stack_it)->operand(argument->parameter_number());
+  }
+
+  if (call_stack_it == call_stack.instructions().rend()) {
     return std::nullopt;
   }
 
-  auto* argument = fusion->operand(parameter->parameter_number());
-  // Get out of the async fusion if it is one.
-  if (argument->opcode() == HloOpcode::kParameter &&
-      scope.instructions().back()->opcode() == HloOpcode::kAsyncStart) {
-    argument =
-        scope.instructions().back()->operand(argument->parameter_number());
-  }
+  VLOG(5) << "Arrived at " << argument->name() << " in "
+          << (*call_stack_it)->name();
+
+  // We should now be in a call (if command buffers are enabled) or a while.
 
   // Find all the dependencies of the argument.
   absl::flat_hash_set<const HloInstruction*> deps;
@@ -132,39 +141,65 @@ std::optional<WhileLoopSpec> GetDefiningWhileLoop(
     return std::nullopt;
   }
 
+  VLOG(5) << "Parameter and GTE: " << unique_param->name() << ", "
+          << unique_gte->name();
+
+  // Continue walking up through call instructions.
+  while (call_stack_it != call_stack_end &&
+         (*call_stack_it)->opcode() == HloOpcode::kCall &&
+         unique_param->opcode() == HloOpcode::kParameter) {
+    unique_param = (*call_stack_it)->operand(unique_param->parameter_number());
+    ++call_stack_it;
+  }
+
+  // Find the while loop for 'unique_param'.
   auto while_instr_it = std::find_if(
-      scope.instructions().rbegin(), scope.instructions().rend(),
+      call_stack_it, call_stack.instructions().rend(),
       [&](const HloInstruction* instr) {
-        if (instr->opcode() != HloOpcode::kWhile) return false;
+        if (instr->opcode() != HloOpcode::kWhile) {
+          VLOG(5) << "Not a loop: " << instr->name();
+          return false;
+        }
 
         // Verify that this GTE is the induction variable of the loop.
         if (unique_param != instr->while_body()->parameter_instruction(0)) {
+          VLOG(5) << "Parameter mismatch: " << unique_param->name() << " vs "
+                  << instr->while_body()->parameter_instruction(0)->name();
+          VLOG(5) << instr->while_body()->ToString();
+          VLOG(5) << unique_param->parent()->ToString();
           return false;
         }
 
         auto config = instr->backend_config<xla::WhileLoopBackendConfig>();
         if (!config.ok()) {
+          VLOG(5) << "Loop has no WhileLoopBackendConfig.";
           return false;
         }
         if (!config->has_known_trip_count() || !config->has_known_init_step() ||
             !config->has_known_induction_variable()) {
+          VLOG(5) << "Loop has no known trip count, known init/step or no "
+                     "known induction variable.";
           return false;
         }
         if (unique_gte->tuple_index() !=
             config->known_induction_variable().tuple_index()) {
+          VLOG(5) << "The offset does not depend on the induction variable.";
           return false;
         }
         return true;
       });
-  if (while_instr_it == scope.instructions().rend()) {
+  if (while_instr_it == call_stack.instructions().rend()) {
+    VLOG(5) << "Did not find a while loop.";
     return std::nullopt;
   }
+  VLOG(5) << "While loop for " << parameter->name() << " in " << fusion->name()
+          << ": " << (*while_instr_it)->name();
   return WhileLoopSpec{*while_instr_it, unique_gte, argument};
 }
 
 std::optional<DynamicMemcpyThunk::MemcpyDescriptor> GetDynamicMemcpyDescriptor(
     const HloFusionAnalysis& analysis, const HloFusionInstruction* fusion,
-    const IrEmitterScope& scope) {
+    const IrEmitterCallStack& call_stack) {
   VLOG(5) << "Looking for a memcpy in " << fusion->name() << ".";
   if (analysis.fusion_roots().size() != 1) {
     return std::nullopt;
@@ -211,7 +246,7 @@ std::optional<DynamicMemcpyThunk::MemcpyDescriptor> GetDynamicMemcpyDescriptor(
       continue;
     }
 
-    auto loop = GetDefiningWhileLoop(scope, fusion, operand);
+    auto loop = GetDefiningWhileLoop(call_stack, fusion, operand);
     if (loop) {
       descriptor.src_dynamic_offsets.emplace_back() = {
           loop->loop, loop->induction_var, loop->slice_arg, (*strides)[i]};
@@ -228,7 +263,8 @@ std::optional<DynamicMemcpyThunk::MemcpyDescriptor> GetDynamicMemcpyDescriptor(
 
 std::optional<std::unique_ptr<FusionInterface>> HloFusionInfo::GetCopyFusion()
     const {
-  auto dynamic_memcpy = GetDynamicMemcpyDescriptor(analysis(), instr_, scope_);
+  auto dynamic_memcpy =
+      GetDynamicMemcpyDescriptor(analysis(), instr_, call_stack_);
   if (dynamic_memcpy) {
     return std::make_unique<DynamicMemcpyFusion>(analysis(), buffer_assignment_,
                                                  std::move(*dynamic_memcpy));

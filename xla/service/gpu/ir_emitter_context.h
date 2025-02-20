@@ -55,8 +55,7 @@ using CollectivesAsyncEvents =
                         std::shared_ptr<NcclCollectiveThunk::AsyncEvents>>;
 
 // Records the hierarchy of instructions that are being emitted.
-// TODO(jreiffers): Give this a better name or figure out a way to not need it.
-class IrEmitterScope {
+class IrEmitterCallStack {
  public:
   // Pushes a new instruction to the stack.
   void Push(const HloInstruction* instruction) {
@@ -85,7 +84,7 @@ class IrEmitterContext {
                    const se::DeviceDescription& gpu_device_info,
                    mlir::MLIRContext* mlir_context, llvm::Module* llvm_module,
                    llvm::Module* llvm_module_constants, bool emit_kernels,
-                   IrEmitterScope* scope)
+                   IrEmitterCallStack* call_stack)
       : hlo_module_(hlo_module),
         buffer_assignment_(buffer_assignment),
         execution_stream_assignment_(execution_stream_assignment),
@@ -95,7 +94,7 @@ class IrEmitterContext {
         llvm_module_(llvm_module),
         llvm_module_constants_(llvm_module_constants),
         emit_kernels_(emit_kernels),
-        scope_(scope) {}
+        call_stack_(call_stack) {}
   // Disallow copy and assign.
   IrEmitterContext(const IrEmitterContext&) = delete;
   IrEmitterContext& operator=(const IrEmitterContext&) = delete;
@@ -153,7 +152,7 @@ class IrEmitterContext {
 
   bool emit_kernels() const { return emit_kernels_; }
 
-  IrEmitterScope* scope() const { return scope_; }
+  IrEmitterCallStack* call_stack() const { return call_stack_; }
 
  private:
   const HloModule* hlo_module_;
@@ -173,7 +172,7 @@ class IrEmitterContext {
   // We should not emit kernels when loading thunks from a compilation result.
   const bool emit_kernels_;
 
-  IrEmitterScope* scope_;
+  IrEmitterCallStack* call_stack_;
 };
 
 }  // namespace gpu

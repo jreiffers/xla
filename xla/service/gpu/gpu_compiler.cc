@@ -427,12 +427,12 @@ GpuThunkAotCompilationResult::LoadExecutable(
   auto llvm_module = std::make_unique<llvm::Module>("", llvm_context);
   llvm_module->setTargetTriple(gpu_compiler->target_triple());
   llvm_module->setDataLayout(gpu_compiler->data_layout());
-  IrEmitterScope scope;
+  IrEmitterCallStack call_stack;
   IrEmitterContext ir_emitter_context(
       hlo_module.get(), buffer_assignment.get(), &execution_stream_assignment,
       platform_name, gpu_device_info, mlir_context.get(), llvm_module.get(),
       /*llvm_module_constants=*/nullptr,
-      /*emit_kernels=*/false, &scope);
+      /*emit_kernels=*/false, &call_stack);
 
   absl::string_view cache_file_path =
       hlo_module->config().debug_options().xla_gpu_kernel_cache_file();
