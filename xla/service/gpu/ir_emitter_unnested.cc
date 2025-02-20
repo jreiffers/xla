@@ -1549,7 +1549,7 @@ absl::Status IrEmitterUnnested::EmitFusion(const HloFusionInstruction* instr) {
       /*fusion_info=*/HloFusionInfo(
           /*analysis=*/fusion_analysis, instr,
           /*buffer_assignment=*/&ir_emitter_context_->buffer_assignment(),
-          /*call_graph=*/*call_graph_, *ir_emitter_context_->scope()));
+          /*call_graph=*/*call_graph_, *ir_emitter_context_->call_stack()));
   TF_ASSIGN_OR_RETURN(auto result, emitter->Emit(*ir_emitter_context_, *instr));
 
   const ExecutionStreamAssignment& stream_assignment =
@@ -2595,9 +2595,9 @@ std::optional<const HloInstruction*> GetCollectiveHeroForDynamicSliceFusion(
 
 absl::Status IrEmitterUnnested::EmitHloInstruction(
     const HloInstruction* instr) {
-  ir_emitter_context_->scope()->Push(instr);
+  ir_emitter_context_->call_stack()->Push(instr);
   auto cleanup =
-      absl::MakeCleanup([&]() { ir_emitter_context_->scope()->Pop(); });
+      absl::MakeCleanup([&]() { ir_emitter_context_->call_stack()->Pop(); });
   switch (instr->opcode()) {
     case HloOpcode::kAllGatherDone:
       return EmitNcclAsyncDone(Thunk::kNcclAllGatherDone, instr);
