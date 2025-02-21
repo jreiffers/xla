@@ -87,6 +87,8 @@ class WhileThunk : public Thunk {
 
   void ForAllThunks(absl::FunctionRef<void(const Thunk*)> fn) const override;
 
+  std::string ToString(int indent) const override;
+
  private:
   const HloInstruction* loop_;
   const BufferAllocation::Slice condition_result_buffer_index_;

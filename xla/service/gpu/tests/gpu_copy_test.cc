@@ -30,7 +30,18 @@ limitations under the License.
 namespace xla {
 namespace gpu {
 
-class GpuCopyTest : public GpuCodegenTest {};
+class GpuCopyTest : public GpuCodegenTest {
+
+
+  DebugOptions GetDebugOptionsForTest() const override {
+    DebugOptions debug_options = GpuCodegenTest::GetDebugOptionsForTest();
+    debug_options.set_xla_dump_to("/tmp/copy-dump");
+    debug_options.set_xla_dump_hlo_pass_re(".*");
+    debug_options.set_xla_gpu_enable_command_buffer("");
+    return debug_options;
+  }
+
+};
 
 // The GPU backend should not emit a copy kernel for the kCopy instruction in
 // this test. Instead, it should generate a CopyThunk which invokes cuMemcpy at

@@ -175,5 +175,15 @@ void WhileThunk::ForAllThunks(absl::FunctionRef<void(const Thunk*)> fn) const {
   body_thunk_sequence_->ForAllThunks(fn);
 }
 
+std::string WhileThunk::ToString(int indent) const {
+  std::string indent_str(indent * 2, ' ');
+  std::string result;
+  absl::StrAppend(&result, indent_str, "\ncondition:\n");
+  absl::StrAppend(&result, condition_thunk_sequence_->ToString(indent + 1));
+  absl::StrAppend(&result, indent_str, "body:\n");
+  absl::StrAppend(&result, body_thunk_sequence_->ToString(indent + 1));
+  return result;
+}
+
 }  // namespace gpu
 }  // namespace xla
