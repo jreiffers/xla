@@ -217,21 +217,25 @@ std::optional<DynamicMemcpyThunk::MemcpyDescriptor> GetDynamicMemcpyDescriptor(
 
   // Only contiguous slices can be represented by a memcpy.
   if (!IsContiguousSlice(slice)) {
+    VLOG(5) << "Slice is not contiguous.";
     return std::nullopt;
   }
 
   std::optional<absl::InlinedVector<int64_t, 4>> strides =
       ShapeUtil::ByteStrides(slice.operand(0)->shape());
   if (!strides) {
+    VLOG(5) << "Failed to get byte strides.";
     return std::nullopt;
   }
 
+  VLOG(5) << "Preconditions passed, trying to build a memcpy descriptor.";
   DynamicMemcpyThunk::MemcpyDescriptor descriptor;
   for (int i = 0; i < slice.operand_count() - 1; ++i) {
     auto* operand = slice.operand(i + 1);
     // If this dimension's offset is always clamped to 0, we can skip it.
     if (slice.dynamic_slice_sizes()[i] ==
         slice.operand(0)->shape().dimensions(i)) {
+      VLOG(5) << "Offset for dimension " << i << " is clamped to 0.";
       continue;
     }
 
@@ -242,17 +246,22 @@ std::optional<DynamicMemcpyThunk::MemcpyDescriptor> GetDynamicMemcpyDescriptor(
         return std::nullopt;
       }
 
+      VLOG(5) << "Offset for dimension " << i << " is constant: " << *value
+              << ".";
       descriptor.src_byte_static_offset += *value * (*strides)[i];
       continue;
     }
 
     auto loop = GetDefiningWhileLoop(call_stack, fusion, operand);
     if (loop) {
+      VLOG(5) << "Offset for dimension " << i << " is dynamic.";
       descriptor.src_dynamic_offsets.emplace_back() = {
           loop->loop, loop->induction_var, loop->slice_arg, (*strides)[i]};
       continue;
     }
 
+    VLOG(5) << "Offset for dimension " << i
+            << " is unsupported: " << operand->name();
     return std::nullopt;
   }
 
@@ -263,11 +272,19 @@ std::optional<DynamicMemcpyThunk::MemcpyDescriptor> GetDynamicMemcpyDescriptor(
 
 std::optional<std::unique_ptr<FusionInterface>> HloFusionInfo::GetCopyFusion()
     const {
-  auto dynamic_memcpy =
-      GetDynamicMemcpyDescriptor(analysis(), instr_, call_stack_);
-  if (dynamic_memcpy) {
-    return std::make_unique<DynamicMemcpyFusion>(analysis(), buffer_assignment_,
-                                                 std::move(*dynamic_memcpy));
+  // This type of fusion is not yet supported with command buffers.
+  if (instr_->GetModule()
+          ->config()
+          .debug_options()
+          .xla_gpu_enable_command_buffer()
+          .empty()) {
+    auto dynamic_memcpy =
+        GetDynamicMemcpyDescriptor(analysis(), instr_, call_stack_);
+    if (dynamic_memcpy) {
+      VLOG(5) << "Creating a dynamic memcpy fusion.";
+      return std::make_unique<DynamicMemcpyFusion>(
+          analysis(), buffer_assignment_, std::move(*dynamic_memcpy));
+    }
   }
 
   for (const HloInstructionAdaptor& root_adaptor : analysis().fusion_roots()) {
