@@ -184,6 +184,10 @@ class DynamicMemcpyThunk : public Thunk {
       // constants only.
       const HloInstruction* offset;
 
+      // The size of the dimension that this offset corresponds to. As per HLO
+      // semantics, values of `offset` will be clamped to one less than this.
+      int64_t dimension_size;
+
       // The stride with which to multiply the induction variable's value.
       int64_t byte_stride;
     };

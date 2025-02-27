@@ -97,8 +97,11 @@ constexpr char kSliceMemcpyModule[] = R"(
 
     remainder {
       p0 = s32[] parameter(0)
-      c4 = s32[] constant(4)
-      ROOT remainder = s32[] remainder(p0, c4)
+      c5 = s32[] constant(5)
+      // We take the value modulo 5 to test for correct clamping (the offset 4
+      // must get clamped to 3, since it's greater or equal than the dimension
+      // size).
+      ROOT remainder = s32[] remainder(p0, c5)
     }
 
     add {
@@ -141,8 +144,8 @@ constexpr char kSliceMemcpyModule[] = R"(
 
     compare {
       p0 = s32[] parameter(0)
-      c5 = s32[] constant(5)
-      ROOT cmp = pred[] compare(p0, c5), direction=LT
+      c6 = s32[] constant(6)
+      ROOT cmp = pred[] compare(p0, c6), direction=LT
     }
 
     condition {
@@ -169,7 +172,7 @@ constexpr char kSliceMemcpyModule[] = R"(
       tuple = (s32[], s32[4,8,8], s32[1,1,8], s32[]) tuple(c0, input, init_acc, c1)
       ROOT while = (s32[], s32[4,8,8], s32[1,1,8], s32[]) while(tuple),
           condition=condition, body=body, 
-          backend_config={"known_trip_count":{"n":"5"},
+          backend_config={"known_trip_count":{"n":"6"},
                           "known_init_step":{"init":"0","step":"1"},
                           "known_induction_variable":{"tuple_index":"0"}}
     })";
