@@ -133,7 +133,9 @@ std::optional<DynamicMemcpyThunk::MemcpyDescriptor> GetDynamicMemcpyDescriptor(
     VLOG(5) << "Offset for dimension " << i << " is dynamic.";
     descriptor.src_dynamic_offsets.emplace_back() = {
         functional_dependency->loop, functional_dependency->induction_var,
-        functional_dependency->derived_value, (*strides)[i]};
+        functional_dependency->derived_value,
+        /*dimension_size=*/slice.operand(0)->shape().dimensions(i),
+        /*byte_stride=*/(*strides)[i]};
   }
 
   return descriptor;

@@ -249,9 +249,11 @@ absl::Status DynamicMemcpyThunk::ExecuteOnStream(const ExecuteParams& params) {
       return absl::InternalError("Failed to evaluate offset");
     }
 
+    int64_t clamped_index =
+        std::max<int64_t>(0, std::min(*array_index, offset.dimension_size - 1));
     VLOG(3) << "Iteration index " << index << " resulted in array index "
             << *array_index << ".";
-    src_offset += *array_index * offset.byte_stride;
+    src_offset += clamped_index * offset.byte_stride;
   }
 
   auto src_with_offset = source_data.GetByteSlice(src_offset, mem_size_);
