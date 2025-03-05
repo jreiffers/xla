@@ -22,6 +22,7 @@ limitations under the License.
 #include "xla/backends/gpu/codegen/fusion_emitter.h"
 #include "xla/hlo/ir/hlo_instructions.h"
 #include "xla/service/buffer_assignment.h"
+#include "xla/service/call_graph.h"
 #include "xla/service/gpu/hlo_fusion_analysis.h"
 #include "xla/service/gpu/ir_emitter_context.h"
 #include "xla/backends/gpu/runtime/copy_thunk.h"
@@ -62,6 +63,15 @@ class DynamicMemcpyFusion : public FusionInterface {
   absl::StatusOr<FusionEmissionResult> Emit(
       IrEmitterContext& ir_emitter_context,
       const HloFusionInstruction& fusion) const final;
+
+  // Inexpensive checks to see if a fusion might be a dynamic memcpy fusion.
+  // If this returns true, GetMemcpyDescriptorForFusion might still fail.
+  static bool IsCandidateFusion(const HloFusionInstruction& fusion);
+
+  // Attempts to build a memcpy descriptor for the given fusion.
+  static std::optional<DynamicMemcpyThunk::MemcpyDescriptor>
+  GetMemcpyDescriptorForFusion(const HloFusionInstruction& fusion,
+                               const CallGraph& call_graph);
 
  private:
   const HloFusionAnalysis& analysis_;

@@ -664,6 +664,14 @@ bool IsDynamicSliceFusion(const HloInstruction* instr) {
          name == kDynamicSliceFusionWithDynamicAddressComputationConfigName;
 }
 
+bool IsDynamicMemcpyFusion(const HloInstruction* instr) {
+  absl::StatusOr<GpuBackendConfig> backend_config =
+      instr->backend_config<GpuBackendConfig>();
+  return backend_config.ok() &&
+         backend_config->fusion_backend_config().kind() ==
+             kDynamicMemcpyFusionKind;
+}
+
 std::optional<InductionVariableFunctionalDependency>
 ResolveFunctionalDependencyOnInductionVariable(
     absl::Span<const HloInstruction* const> call_stack,
@@ -762,7 +770,8 @@ ResolveFunctionalDependencyOnInductionVariable(
     return std::nullopt;
   }
 
-  auto config = (*while_instr_it)->backend_config<xla::WhileLoopBackendConfig>();
+  auto config =
+      (*while_instr_it)->backend_config<xla::WhileLoopBackendConfig>();
   if (!config.ok() || !config->has_known_induction_variable() ||
       unique_gte->tuple_index() !=
           config->known_induction_variable().tuple_index()) {

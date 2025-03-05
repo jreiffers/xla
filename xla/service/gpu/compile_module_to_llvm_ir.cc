@@ -309,13 +309,12 @@ absl::StatusOr<CompileModuleResults> CompileModuleToLlvmIr(
           << ": " << hlo_module->GetFingerprint128();
 
   std::unique_ptr<mlir::MLIRContext> mlir_context = CreateMlirContext();
-  IrEmitterCallStack call_stack;
   IrEmitterContext ir_emitter_context(
       hlo_module, results.buffer_assignment.get(),
       results.execution_stream_assignment.get(), platform->Name(), device_desc,
       mlir_context.get(), results.llvm_module.get(),
       results.llvm_module_constants.get(),
-      /*emit_kernels=*/true, &call_stack);
+      /*emit_kernels=*/true);
 
   TF_ASSIGN_OR_RETURN(
       results.executable,

@@ -58,103 +58,16 @@ bool IsDynamicUpdateSliceFusion(const HloFusionAnalysis& analysis) {
       });
 }
 
-std::optional<DynamicMemcpyThunk::MemcpyDescriptor> GetDynamicMemcpyDescriptor(
-    const HloFusionAnalysis& analysis, const HloFusionInstruction* fusion,
-    const IrEmitterCallStack& call_stack) {
-  VLOG(5) << "Looking for a memcpy in " << fusion->name() << ".";
-  if (analysis.fusion_roots().size() != 1) {
-    return std::nullopt;
-  }
-
-  auto root = analysis.fusion_roots().front();
-  if (root.opcode() != HloOpcode::kDynamicSlice) {
-    return std::nullopt;
-  }
-
-  const auto& slice = root.instruction();
-  if (slice.operand(0)->opcode() != HloOpcode::kParameter) {
-    return std::nullopt;
-  }
-
-  // Only contiguous slices can be represented by a memcpy.
-  if (!IsContiguousSlice(slice)) {
-    VLOG(5) << "Slice is not contiguous.";
-    return std::nullopt;
-  }
-
-  std::optional<absl::InlinedVector<int64_t, 4>> strides =
-      ShapeUtil::ByteStrides(slice.operand(0)->shape());
-  if (!strides) {
-    VLOG(5) << "Failed to get byte strides.";
-    return std::nullopt;
-  }
-
-  VLOG(5) << "Preconditions passed, trying to build a memcpy descriptor.";
-  DynamicMemcpyThunk::MemcpyDescriptor descriptor;
-  for (int i = 0; i < slice.operand_count() - 1; ++i) {
-    auto* operand = slice.operand(i + 1);
-    // If this dimension's offset is always clamped to 0, we can skip it.
-    if (slice.dynamic_slice_sizes()[i] ==
-        slice.operand(0)->shape().dimensions(i)) {
-      VLOG(5) << "Offset for dimension " << i << " is clamped to 0.";
-      continue;
-    }
-
-    if (operand->opcode() == HloOpcode::kConstant) {
-      std::optional<int64_t> value =
-          LiteralUtil::LiteralAsScalarInt64(operand->literal());
-      if (!value) {
-        return std::nullopt;
-      }
-
-      VLOG(5) << "Offset for dimension " << i << " is constant: " << *value
-              << ".";
-      descriptor.src_byte_static_offset += *value * (*strides)[i];
-      continue;
-    }
-
-    auto functional_dependency = ResolveFunctionalDependencyOnInductionVariable(
-        call_stack.instructions(), operand);
-    if (!functional_dependency) {
-      VLOG(5) << "Offset for dimension " << i << " is not statically known.";
-      return std::nullopt;
-    }
-
-    // The while loop must actually be a for loop.
-    auto loop_config = functional_dependency->loop
-                           ->backend_config<xla::WhileLoopBackendConfig>();
-    if (!loop_config.ok() || !loop_config->has_known_init_step() ||
-        !loop_config->has_known_trip_count()) {
-      VLOG(5) << "Offset for dimension " << i
-              << " depends on loop with unknown behavior.";
-      return std::nullopt;
-    }
-
-    VLOG(5) << "Offset for dimension " << i << " is dynamic.";
-    descriptor.src_dynamic_offsets.emplace_back() = {
-        functional_dependency->loop, functional_dependency->induction_var,
-        functional_dependency->derived_value,
-        /*dimension_size=*/slice.operand(0)->shape().dimensions(i),
-        /*byte_stride=*/(*strides)[i]};
-  }
-
-  return descriptor;
-}
-
 }  // namespace
 
 std::optional<std::unique_ptr<FusionInterface>> HloFusionInfo::GetCopyFusion()
     const {
   // This type of fusion is not yet supported with command buffers.
-  if (instr_->GetModule()
-          ->config()
-          .debug_options()
-          .xla_gpu_enable_command_buffer()
-          .empty()) {
+  if (analysis().GetEmitterFusionKind() ==
+      HloFusionAnalysis::EmitterFusionKind::kDynamicMemcpy) {
     auto dynamic_memcpy =
-        GetDynamicMemcpyDescriptor(analysis(), instr_, call_stack_);
+        DynamicMemcpyFusion::GetMemcpyDescriptorForFusion(*instr_, call_graph_);
     if (dynamic_memcpy) {
-      VLOG(5) << "Creating a dynamic memcpy fusion.";
       return std::make_unique<DynamicMemcpyFusion>(
           analysis(), buffer_assignment_, std::move(*dynamic_memcpy));
     }
@@ -205,6 +118,7 @@ std::unique_ptr<FusionInterface> GetFusionEmitter(
     }
     case HloFusionAnalysis::EmitterFusionKind::kInputSlices:
       return std::make_unique<InputSlicesFusion>(analysis);
+    case HloFusionAnalysis::EmitterFusionKind::kDynamicMemcpy:
     case HloFusionAnalysis::EmitterFusionKind::kLoop: {
       if (IsDynamicUpdateSliceFusion(analysis) &&
           fusion_info.CanEmitDynamicUpdateSliceInPlace()) {
