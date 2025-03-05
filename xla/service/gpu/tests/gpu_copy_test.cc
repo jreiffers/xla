@@ -32,14 +32,6 @@ namespace gpu {
 
 class GpuCopyTest : public GpuCodegenTest {};
 
-class GpuCopyTestNoCommandBuffers : public GpuCodegenTest {
-  DebugOptions GetDebugOptionsForTest() const override {
-    DebugOptions debug_options = GpuCodegenTest::GetDebugOptionsForTest();
-    debug_options.clear_xla_gpu_enable_command_buffer();
-    return debug_options;
-  }
-};
-
 // The GPU backend should not emit a copy kernel for the kCopy instruction in
 // this test. Instead, it should generate a CopyThunk which invokes cuMemcpy at
 // runtime.
@@ -133,7 +125,8 @@ constexpr char kSliceMemcpyModule[] = R"(
       offset1 = s32[] fusion(ivar_copy), kind=kLoop, calls=remainder
       offset2 = s32[] get-tuple-element(p0), index=3     
 
-      slice = s32[1,1,8] fusion(input, offset1, offset2), kind=kLoop, calls=dynamic_slice
+      slice = s32[1,1,8] fusion(input, offset1, offset2), kind=kLoop, calls=dynamic_slice,
+          backend_config={"fusion_backend_config":{"kind":"__dynamic_memcpy"}}
       next_ivar = s32[] fusion(ivar_copy), kind=kLoop, calls=add
       next_offset_2 = s32[] fusion(offset2), kind=kLoop, calls=times_two
 
@@ -177,7 +170,7 @@ constexpr char kSliceMemcpyModule[] = R"(
                           "known_induction_variable":{"tuple_index":"0"}}
     })";
 
-TEST_F(GpuCopyTestNoCommandBuffers, UseMemcpyForDynamicSlice) {
+TEST_F(GpuCopyTest, UseMemcpyForDynamicSlice) {
   // This verifies that dynamic slices can be implemented using memcpy in
   // certain conditions.
   TF_ASSERT_OK_AND_ASSIGN(std::unique_ptr<VerifiedHloModule> hlo_module,
@@ -190,7 +183,7 @@ TEST_F(GpuCopyTestNoCommandBuffers, UseMemcpyForDynamicSlice) {
   EXPECT_TRUE(RunAndCompareNoHloPasses(kSliceMemcpyModule, ErrorSpec{1e-5, 1e-5}));
 }
 
-TEST_F(GpuCopyTestNoCommandBuffers, DoNotUseMemcpyForDynamicSlice) {
+TEST_F(GpuCopyTest, DoNotUseMemcpyForDynamicSlice) {
   // This is a test for the CompileAndVerifyIr statement in
   // UseMemcpyForDynamicSlice. When the conditions are not met, there should be
   // a fusion for the slice.
