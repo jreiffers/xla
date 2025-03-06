@@ -62,7 +62,6 @@ bool IsDynamicUpdateSliceFusion(const HloFusionAnalysis& analysis) {
 
 std::optional<std::unique_ptr<FusionInterface>> HloFusionInfo::GetCopyFusion()
     const {
-  // This type of fusion is not yet supported with command buffers.
   if (analysis().GetEmitterFusionKind() ==
       HloFusionAnalysis::EmitterFusionKind::kDynamicMemcpy) {
     auto dynamic_memcpy =
