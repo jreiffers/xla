@@ -104,7 +104,11 @@ absl::StatusOr<FusionEmissionResult> DynamicMemcpyFusion::Emit(
 namespace {
 
 bool IsZeroOffset(const HloInstruction* slice, int dim) {
-  return slice->dynamic_slice_sizes()[dim] ==
+  if (slice->opcode() == HloOpcode::kDynamicSlice) {
+    return slice->dynamic_slice_sizes()[dim] ==
+           slice->operand(0)->shape().dimensions(dim);
+  }
+  return slice->operand(1)->shape().dimensions(dim) ==
          slice->operand(0)->shape().dimensions(dim);
 }
 
@@ -129,12 +133,22 @@ std::vector<const HloInstruction*> GetCallStack(
   return stack;
 }
 
+int GetFirstOffset(const HloInstruction* slice) {
+  // dynamic-slice takes the full array, then the offsets.
+  // dynamic-update-slice takes the full array, then the update slice, then the
+  // offsets.
+  CHECK(slice->opcode() == HloOpcode::kDynamicSlice ||
+        slice->opcode() == HloOpcode::kDynamicUpdateSlice);
+  return slice->opcode() == HloOpcode::kDynamicSlice ? 1 : 2;
+}
+
 }  // namespace
 
 bool DynamicMemcpyFusion::IsCandidateFusion(
     const HloFusionInstruction& instruction) {
   const HloInstruction* root = instruction.fused_expression_root();
-  if (root->opcode() != HloOpcode::kDynamicSlice) {
+  if (root->opcode() != HloOpcode::kDynamicSlice &&
+      root->opcode() != HloOpcode::kDynamicUpdateSlice) {
     return false;
   }
 
@@ -151,14 +165,17 @@ bool DynamicMemcpyFusion::IsCandidateFusion(
     return false;
   }
 
-  if (root->operand(0)->opcode() != HloOpcode::kParameter) {
-    VLOG(5) << "Not a slice of a parameter.";
-    return false;
+  int first_offset = GetFirstOffset(root);
+  for (int i = 0; i < first_offset; ++i) {
+    if (root->operand(i)->opcode() != HloOpcode::kParameter) {
+      VLOG(5) << "Not a slice of a parameter.";
+      return false;
+    }
   }
 
   int rank = root->operand(0)->shape().rank();
   for (int i = 0; i < rank; ++i) {
-    auto* operand = root->operand(i + 1);
+    auto* operand = root->operand(i + first_offset);
     if (!IsZeroOffset(root, i) && operand->opcode() != HloOpcode::kConstant &&
         operand->opcode() != HloOpcode::kParameter) {
       VLOG(5) << "Dimension " << i << " is not a constant or a parameter.";
@@ -186,13 +203,20 @@ DynamicMemcpyFusion::GetMemcpyDescriptorForFusion(
     return std::nullopt;
   }
 
+  int first_offset = GetFirstOffset(slice);
   int rank = slice_input_shape.rank();
   auto stack = GetCallStack(fusion, call_graph);
 
   VLOG(5) << "Preconditions passed, trying to build a memcpy descriptor.";
   DynamicMemcpyThunk::MemcpyDescriptor descriptor;
+  auto& dynamic_offsets = slice->opcode() == HloOpcode::kDynamicSlice
+                              ? descriptor.src_dynamic_offsets
+                              : descriptor.dst_dynamic_offsets;
+  auto& static_offset = slice->opcode() == HloOpcode::kDynamicSlice
+                            ? descriptor.src_byte_static_offset
+                            : descriptor.dst_byte_static_offset;
   for (int i = 0; i < rank; ++i) {
-    auto* operand = slice->operand(i + 1);
+    auto* operand = slice->operand(i + first_offset);
     // If this dimension's offset is always clamped to 0, we can skip it.
     if (IsZeroOffset(slice, i)) {
       VLOG(5) << "Offset for dimension " << i << " is clamped to 0.";
@@ -208,7 +232,7 @@ DynamicMemcpyFusion::GetMemcpyDescriptorForFusion(
 
       VLOG(5) << "Offset for dimension " << i << " is constant: " << *value
               << ".";
-      descriptor.src_byte_static_offset += *value * (*strides)[i];
+      static_offset += *value * (*strides)[i];
       continue;
     }
 
@@ -230,7 +254,7 @@ DynamicMemcpyFusion::GetMemcpyDescriptorForFusion(
     }
 
     VLOG(5) << "Offset for dimension " << i << " is dynamic.";
-    descriptor.src_dynamic_offsets.emplace_back() = {
+    dynamic_offsets.emplace_back() = {
         functional_dependency->loop, functional_dependency->induction_var,
         functional_dependency->derived_value,
         /*dimension_size=*/slice_input_shape.dimensions(i),
