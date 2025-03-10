@@ -61,12 +61,14 @@ std::optional<std::unique_ptr<FusionInterface>> HloFusionInfo::GetCopyFusion()
     const {
   if (analysis().GetEmitterFusionKind() ==
       HloFusionAnalysis::EmitterFusionKind::kDynamicMemcpy) {
+        std::cerr << instr_->name() << " is a dynamic memcpy fusion\n";
     auto dynamic_memcpy =
         DynamicMemcpyFusion::GetMemcpyDescriptorForFusion(*instr_, call_graph_);
     if (dynamic_memcpy) {
       return std::make_unique<DynamicMemcpyFusion>(
           analysis(), buffer_assignment_, std::move(*dynamic_memcpy));
     }
+        std::cerr << instr_->name() << " failed to produce descriptor\n";
   }
 
   for (const HloInstructionAdaptor& root_adaptor : analysis().fusion_roots()) {
@@ -116,12 +118,12 @@ std::unique_ptr<FusionInterface> GetFusionEmitter(
       return std::make_unique<InputSlicesFusion>(analysis);
     case HloFusionAnalysis::EmitterFusionKind::kDynamicMemcpy:
     case HloFusionAnalysis::EmitterFusionKind::kLoop: {
+      if (auto copy_fusion = fusion_info.GetCopyFusion()) {
+        return *std::move(copy_fusion);
+      }
       if (IsDynamicUpdateSliceFusion(analysis) &&
           fusion_info.CanEmitDynamicUpdateSliceInPlace()) {
         return std::make_unique<InPlaceDynamicUpdateSliceFusion>(analysis);
-      }
-      if (auto copy_fusion = fusion_info.GetCopyFusion()) {
-        return *std::move(copy_fusion);
       }
       return std::make_unique<LoopFusion>(analysis);
     }
