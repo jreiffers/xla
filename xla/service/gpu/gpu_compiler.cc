@@ -2761,6 +2761,15 @@ absl::Status GpuCompiler::RunPostSchedulingPipelines(
     pipeline.AddPass<FusionWrapper>(gpu_device_info);
   }
 
+  const auto* cuda_cc = std::get_if<se::CudaComputeCapability>(
+      &gpu_device_info.gpu_compute_capability());
+  if (cuda_cc != nullptr && cuda_cc->IsAtLeastAmpere()) {
+    // FusionWrapper and StreamAttributeAnnotator create new fusions, so make
+    // sure we dispatch them properly.
+    main_pipeline.AddPass<HloPassPipeline>(
+        FusionDispatchPipeline(gpu_device_info, ShapeSizeBytesFunction()));
+  }
+
   // Pipeline with passes which wrap a scheduled module into command buffers.
   {
     HloPassPipeline& pipeline =

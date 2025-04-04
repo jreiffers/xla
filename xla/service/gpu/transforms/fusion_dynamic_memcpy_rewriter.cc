@@ -49,9 +49,15 @@ absl::StatusOr<bool> FusionDynamicMemcpyRewriter::Run(
 
     HloFusionInstruction* fusion =
         ::xla::Cast<HloFusionInstruction>(computation->FusionInstruction());
+    TF_ASSIGN_OR_RETURN(auto backend_config,
+                        fusion->backend_config<GpuBackendConfig>());
+    if (backend_config.fusion_backend_config().kind() ==
+        kDynamicMemcpyFusionKind) {
+      // This fusion is already annotated, no need to redo the analysis.
+      continue;
+    }
+
     if (DynamicMemcpyFusion::GetMemcpyDescriptorForFusion(*fusion)) {
-      TF_ASSIGN_OR_RETURN(auto backend_config,
-                          fusion->backend_config<GpuBackendConfig>());
       backend_config.mutable_fusion_backend_config()->set_kind(
           std::string(kDynamicMemcpyFusionKind));
       TF_RETURN_IF_ERROR(fusion->set_backend_config(backend_config));
