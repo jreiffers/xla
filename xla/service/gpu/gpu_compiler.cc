@@ -158,6 +158,7 @@ limitations under the License.
 #include "xla/service/gpu/flag_utils.h"
 #include "xla/service/gpu/fusion_dispatch_pipeline.h"
 #include "xla/service/gpu/fusion_pipeline.h"
+#include "xla/service/gpu/transforms/forced_fusion.h"
 #include "xla/service/gpu/gpu_executable.h"
 #include "xla/service/gpu/gpu_float_support.h"
 #include "xla/service/gpu/gpu_hlo_schedule.h"
@@ -1869,6 +1870,14 @@ absl::StatusOr<std::unique_ptr<HloModule>> GpuCompiler::RunHloPasses(
       gpu_target_config.device_description;
   TF_RETURN_IF_ERROR(
       RunPreSchedulingCopyInsertion(*module, device_description));
+
+  // pre-scheduling-copy-insertion reruns HorizontalFusion, which is a bit
+  // surprising. post-fusion needs to run afterwards, unless we come up with
+  // some mechanism to prevent horizontal fusion of forced fusions.
+  // TODO(jreiffers): Clean this up?
+  HloPassPipeline post_fusion("post-fusion");
+  post_fusion.AddPass<ForcedFusion>();
+  TF_RETURN_IF_ERROR(post_fusion.Run(module.get()).status());
 
   uint64_t end_usecs = tsl::Env::Default()->NowMicros();
 
