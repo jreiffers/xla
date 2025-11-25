@@ -29,6 +29,18 @@ cc_library(
     ],
 )
 
+cc_library(
+    name = "vectorization_and_pipelining_utils",
+    srcs = ["vectorization_and_pipelining_utils.cc"],
+    hdrs = ["vectorization_and_pipelining_utils.h"],
+    deps = [
+        "@llvm-project//llvm:Support",
+        "@llvm-project//mlir:IR",
+        "@llvm-project//mlir:SCFDialect",
+        "@llvm-project//mlir:TensorDialect",
+    ],
+)
+
 gentbl_cc_library(
     name = "passes_inc_gen",
     compatible_with = get_compatible_with_portable(),
@@ -48,11 +60,13 @@ cc_library(
         "erase_dead_functions.cc",
         "expand_float_ops.cc",
         "flatten_tensors.cc",
+        "lower_pipes.cc",
         "lower_tensors.cc",
         "lower_to_llvm.cc",
         "lower_xla_intrinsic_lib.cc",
         "lower_xla_to_scf.cc",
         "merge_pointers_to_same_slice.cc",
+        "pipeline_loads.cc",
         "propagate_slice_indices.cc",
         "unswitch_loops.cc",
         "vectorize_loads_stores.cc",
@@ -64,6 +78,7 @@ cc_library(
         ":passes_inc_gen",
         ":simplify_affine_pass",
         ":simplify_arith_pass",
+        ":vectorization_and_pipelining_utils",
         "//xla:shape_util",
         "//xla:util",
         "//xla:xla_data_proto_cc",

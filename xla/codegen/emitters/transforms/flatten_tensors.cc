@@ -17,6 +17,11 @@ limitations under the License.
 #include <optional>
 #include <utility>
 
+
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+#pragma clang diagnostic ignored "-W#pragma-messages"
+
+
 #include "llvm/ADT/APInt.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallBitVector.h"
@@ -63,6 +68,7 @@ namespace {
 #include "xla/codegen/emitters/transforms/passes.h.inc"
 
 using mlir::Attribute;
+using mlir::ImplicitLocOpBuilder;
 using mlir::Location;
 using mlir::LogicalResult;
 using mlir::MLIRContext;
@@ -85,6 +91,8 @@ using mlir::scf::IfOp;
 using mlir::scf::IndexSwitchOp;
 using mlir::tensor::ExtractOp;
 using mlir::tensor::InsertOp;
+using mlir::OpFoldResult;
+
 namespace mv = mlir::vector;
 
 RankedTensorType GetFlattenedType(RankedTensorType tensor_type) {
@@ -314,6 +322,58 @@ struct RewriteTensorExtract : OpRewritePattern<ExtractOp> {
                              loc, GetFlattenedType(tensor_type), tensor)
                          .getResult(0);
     rewriter.replaceOpWithNewOp<ExtractOp>(op, tensor_1D, linear_index);
+    return mlir::success();
+  }
+};
+
+struct RewriteTensorSlice : OpRewritePattern<mlir::tensor::ExtractSliceOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(
+      mlir::tensor::ExtractSliceOp op,
+      mlir::PatternRewriter& rewriter) const override {
+    auto tensor = op.getSource();
+    auto tensor_type = tensor.getType();
+
+    auto result = op.getResult();
+    auto result_type = result.getType();
+    if (!op.hasUnitStride() || !result_type.hasStaticShape()) {
+      return llvm::failure();
+    }
+
+    if (tensor_type.getRank() < 2) {
+      return rewriter.notifyMatchFailure(op, "the tensor is already flat");
+    }
+
+    // TODO: Verify that the slice is contiguous in memory.
+
+    auto loc = op.getLoc();
+    // Compute the linearized offset.
+    auto linear_index = LinearizeIndex(
+        loc, tensor_type,
+        mlir::getValueOrCreateConstantIndexOp(rewriter, op.getLoc(), op.getMixedOffsets()),
+        rewriter,
+        tensor_type.getEncoding());
+
+    // Compute the flattened type for the slice.
+    SmallVector<int64_t> slice_shape { op.getResult().getType().getNumElements() };
+    auto flat_slice_type = tensor_type.clone(slice_shape);
+
+    // Create the flattened tensor.
+    auto tensor_1D = rewriter
+                         .create<UnrealizedConversionCastOp>(
+                             loc, GetFlattenedType(tensor_type), tensor)
+                         .getResult(0);
+
+    // Create the new extract slice op.
+    Value new_slice = rewriter.create<mlir::tensor::ExtractSliceOp>(
+        op.getLoc(), flat_slice_type, tensor_1D, ValueRange{linear_index},
+        ValueRange{}, ValueRange{},
+        SmallVector<int64_t>{mlir::ShapedType::kDynamic},
+        slice_shape, SmallVector<int64_t>{1});
+
+    // Cast back to the original type.
+    rewriter.replaceOpWithNewOp<UnrealizedConversionCastOp>(op, result_type, new_slice);
     return mlir::success();
   }
 };
@@ -748,6 +808,63 @@ struct RewriteSyncThreads : OpRewritePattern<gpu::SyncThreadsOp> {
   }
 };
 
+struct RewriteAsyncCopyStart : OpRewritePattern<gpu::AsyncCopyStartOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(gpu::AsyncCopyStartOp op,
+                                PatternRewriter& rewriter) const override {
+    if (op.getBuffer().getType().getRank() == 1) {
+      return rewriter.notifyMatchFailure(op, "nothing to flatten");
+    } 
+
+    Value source_1d = Flatten(op.getSource(), rewriter);
+    Value buffer_1d = Flatten(op.getBuffer(), rewriter);
+
+    Location loc = op.getLoc();
+    ImplicitLocOpBuilder b(loc, rewriter);
+    auto new_op = b.create<gpu::AsyncCopyStartOp>(
+        buffer_1d.getType(), op.getMembars().getType(), source_1d, buffer_1d, op.getMembars(), op.getOffset(), op.getIsLeader());
+
+    // Cast the output buffer back to the original type.
+    Value cast_out_buffers = b.create<UnrealizedConversionCastOp>(
+        op.getBuffer().getType(), new_op.getOutBuffer()).getResult(0);
+        
+    rewriter.replaceOp(op, {cast_out_buffers, new_op.getOutMembars()});
+    return llvm::success();
+  }
+};
+
+struct RewriteAsyncCopyWait : OpRewritePattern<gpu::AsyncCopyWaitOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(gpu::AsyncCopyWaitOp op,
+                                PatternRewriter& rewriter) const override {
+    if (op.getBuffer().getType().getRank() == 1) {
+      return rewriter.notifyMatchFailure(op, "nothing to flatten");
+    } 
+
+    Location loc = op.getLoc();
+
+    // Cast buffer to 1D before extracting slice. Membars are already 1D.
+    auto buffer_type = op.getBuffer().getType();
+
+    Value buffer_1d = Flatten(op.getBuffer(), rewriter);
+    Type flat_element_ty = buffer_type.clone({buffer_type.getNumElements() /
+                                              buffer_type.getShape().front()});
+
+    mlir::ImplicitLocOpBuilder b(loc, rewriter);
+
+    auto new_op = b.create<gpu::AsyncCopyWaitOp>(
+        flat_element_ty, op.getMembars().getType(), buffer_1d, op.getMembars(), op.getOffset(), op.getIsLeader());
+    // Cast the output buffer back to the original type.
+    Value cast_out_element = b.create<UnrealizedConversionCastOp>(
+        op.getOutElement().getType(), new_op.getOutElement()).getResult(0);
+
+    rewriter.replaceOp(op, {cast_out_element, new_op.getOutMembars()});
+    return llvm::success();
+  }
+};
+
 class FlattenTensorsPass
     : public impl::FlattenTensorsPassBase<FlattenTensorsPass> {
  public:
@@ -768,11 +885,14 @@ class FlattenTensorsPass
         RewriteSyncThreads,
         RewriteTensorExtract,
         RewriteTensorInsert,
+        RewriteTensorSlice,
         RewriteVectorExtract,
         RewriteVectorFromElements,
         RewriteVectorInsert,
         RewriteVectorTransferRead,
-        RewriteCpuLoad
+        RewriteCpuLoad,
+        RewriteAsyncCopyStart,
+        RewriteAsyncCopyWait
     >(mlir_context);
     // clang-format on
     ApplyIndexingOp::getCanonicalizationPatterns(patterns, mlir_context);

@@ -47,4 +47,23 @@ def XLAGPU_IndexedVectorType : XLAGPU_Type<"IndexedVector", "indexed_vector",
   }];
 }
 
+def XLAGPU_SharedMemoryPipeType : XLAGPU_Type<"SharedMemoryPipe", "shmem_pipe"> {
+  let summary = "Shared memory pipe";
+
+  let parameters = (ins
+    "::mlir::RankedTensorType":$elementType,
+    "int64_t":$capacity,
+    "int64_t":$level);
+
+  let extraClassDeclaration = [{
+    SharedMemoryPipeType cloneWithLevel(int64_t level) const {
+        return SharedMemoryPipeType::get(
+            getContext(), getElementType(), getCapacity(),
+            level);
+    }
+  }];
+
+  let assemblyFormat = "`<` $capacity `*` $elementType `,` $level `>`";
+}
+
 #endif // XLA_BACKENDS_GPU_CODEGEN_EMITTERS_IR_XLA_GPU_TYPES_TD

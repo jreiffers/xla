@@ -1032,7 +1032,8 @@ LaunchDimensionsConfig ComputeLoopFusionConfig(
   CHECK(absl::has_single_bit(static_cast<uint64_t>(unroll_factor)));
   VLOG(2) << "Unroll factor: " << unroll_factor;
 
-  LaunchDimensionsConfig launch_config{unroll_factor};
+  // TODO: Do this properly.
+  LaunchDimensionsConfig launch_config{unroll_factor, 4};
   return launch_config;
 }
 

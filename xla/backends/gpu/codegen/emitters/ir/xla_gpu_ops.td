@@ -195,4 +195,120 @@ def XLAGPU_ReduceOp : XLAGPU_Op<"reduce", [
   let hasVerifier = 1;
 }
 
+def XLAGPU_AllocatePipeOp : XLAGPU_Op<"allocate_pipe", [
+    Pure]> {
+  let summary = "Allocates a shared memory pipe";
+  let description = [{
+  }];
+  let arguments = (ins
+    I1:$leader,
+    I64Attr:$thread_count);
+  let results = (outs XLAGPU_SharedMemoryPipeType:$result);
+
+  let hasVerifier = 1;
+  let assemblyFormat = "`(` $leader `,` $thread_count `)` attr-dict `:` type($result)";
+}
+
+def XLAGPU_EnqueueOp : XLAGPU_Op<"enqueue", [
+    Pure,
+    DeclareOpInterfaceMethods<InferTypeOpInterface>]> {
+  let summary = "Enqueues a load into a queue.";
+  let description = [{
+
+  }];
+  let arguments = (ins
+    XLAGPU_SharedMemoryPipeType:$pipe,
+    AnyRankedTensor:$source);
+  let results = (outs XLAGPU_SharedMemoryPipeType:$out_pipe);
+
+  let extraClassDeclaration = [{
+  }];
+  let hasVerifier = 1;
+  let assemblyFormat = "$source `into` $pipe attr-dict `:` type($source) `into` type($pipe)";
+}
+
+def XLAGPU_EnqueueUndefOp : XLAGPU_Op<"enqueue_undef", [
+    Pure,
+    DeclareOpInterfaceMethods<InferTypeOpInterface>]> {
+  let arguments = (ins XLAGPU_SharedMemoryPipeType:$pipe);
+  let results = (outs XLAGPU_SharedMemoryPipeType:$out_pipe);
+  let hasVerifier = 1;
+  let assemblyFormat = "$pipe attr-dict `:` type($pipe)";
+}
+
+def XLAGPU_DequeueOp : XLAGPU_Op<"dequeue", [Pure, DeclareOpInterfaceMethods<InferTypeOpInterface>]> {
+  let summary = "Dequeues a tensor from a queue.";
+
+  let arguments = (ins
+    XLAGPU_SharedMemoryPipeType:$pipe);
+  let results = (outs AnyRankedTensor:$tensor, XLAGPU_SharedMemoryPipeType:$out_pipe);
+
+  let hasCustomAssemblyFormat = 1;
+  let hasVerifier = 1;
+  let assemblyFormat = "$pipe attr-dict `:` type($pipe)";
+}
+
+def XLAGPU_InitMembarsOp : XLAGPU_Op<"init_membars", [Pure,
+   TypesMatchWith<"result type matches type of dest",
+                   "membars", "out_membars", "$_self">]> {
+  let summary = "Initializes membars.";
+
+  let arguments = (ins
+    AnyRankedTensor:$membars,
+    I64Attr:$thread_count,
+    I1:$is_leader
+  );
+
+  let results = (outs
+    AnyRankedTensor:$out_membars
+  );
+
+  let hasCustomAssemblyFormat = 1;
+  let assemblyFormat = "$membars `(` $thread_count `)` `leader` $is_leader attr-dict `:` type($membars)";
+}
+
+def XLAGPU_AsyncCopyStartOp : XLAGPU_Op<"async_copy_start",
+    [Pure,
+     TypesMatchWith<"expected out_membars type to match membars type",
+                    "membars", "out_membars", "$_self">,
+     TypesMatchWith<"expected out_buffer type to match buffer type",
+                    "buffer", "out_buffer", "$_self">,
+    ]> {
+  let summary = "";
+
+  let arguments = (ins
+    AnyRankedTensor:$source,
+    AnyRankedTensor:$buffer,
+    AnyRankedTensor:$membars,
+    Index:$offset,
+    I1:$is_leader
+  );
+
+  let results = (outs AnyRankedTensor:$out_buffer, AnyRankedTensor:$out_membars); 
+
+  let hasCustomAssemblyFormat = 1;
+  let hasVerifier = 1;
+  let assemblyFormat = "$source `to` $buffer `[` $offset `]` `membars` $membars `leader` $is_leader attr-dict `:` type($source) `,` type($buffer) `,` type($membars)";
+}
+
+def XLAGPU_AsyncCopyWaitOp : XLAGPU_Op<"async_copy_wait",
+    [Pure,//DeclareOpInterfaceMethods<InferTypeOpInterface>,
+     TypesMatchWith<"expected out_membars type to match membars type",
+                    "membars", "out_membars", "$_self">
+    ]> {
+  let summary = "";
+
+  let arguments = (ins
+    AnyRankedTensor:$buffer,
+    AnyRankedTensor:$membars,
+    Index:$offset,
+    I1:$is_leader
+  );
+
+  let results = (outs AnyRankedTensor:$out_element, AnyRankedTensor:$out_membars); 
+
+//  let hasCustomAssemblyFormat = 1;
+//  let assemblyFormat = "$source `to` $buffer `[` $offset `]` `leader` $is_leader attr-dict `:` type($source), type()";
+}
+
 #endif // XLA_SERVICE_GPU_FUSIONS_MLIR_OPS

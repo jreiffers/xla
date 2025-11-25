@@ -119,6 +119,7 @@ def LowerTensorsPass : Pass<"xla-lower-tensors", "mlir::ModuleOp"> {
     "xla::XlaDialect",
     "mlir::vector::VectorDialect",
     "mlir::ROCDL::ROCDLDialect",
+    "mlir::NVVM::NVVMDialect",
   ];
   let options = [
     Option<"gpu_device_info_", "gpu_device_info", "std::string", /*default=*/"",
@@ -127,6 +128,27 @@ def LowerTensorsPass : Pass<"xla-lower-tensors", "mlir::ModuleOp"> {
            "Whether the pass targets a 'cpu' or 'gpu'. If 'cpu', gpu_device_info_ must be empty.">,
   ];
   let constructor = "CreateLowerTensorsPass()";
+}
+
+def LowerPipesPass : Pass<"xla-lower-pipes", "mlir::ModuleOp"> {
+  let summary = "Lowers shared-memory pipe ops to tensor ops.";
+
+  let description = [{
+    Lowers shared-memory pipe ops (allocate_pipe, enqueue, dequeue, enqueue_undef)
+    into tensor operations and expands the pipe type.
+  }];
+
+  let dependentDialects = [
+    "mlir::func::FuncDialect",
+    "mlir::LLVM::LLVMDialect",
+    "mlir::gpu::GPUDialect",
+    "mlir::scf::SCFDialect",
+    "mlir::tensor::TensorDialect",
+    "xla::gpu::XlaGpuDialect",
+    "xla::XlaDialect",
+    "mlir::NVVM::NVVMDialect",
+  ];
+  let constructor = "CreateLowerPipesPass()";
 }
 
 def LowerToLLVMPass :
@@ -330,6 +352,21 @@ def VectorizeLoadsAndStoresPass :
   ];
 
   let constructor = "CreateVectorizeLoadsAndStoresPass()";
+}
+
+def PipelineLoads :
+    Pass<"xla-gpu-pipeline-loads", "mlir::func::FuncOp"> {
+  let summary = "Inserts shared memory pipes for pipelined loads and stores.";
+
+  let description = [{}];
+
+  let dependentDialects = [
+    "mlir::scf::SCFDialect",
+    "mlir::tensor::TensorDialect",
+    "xla::gpu::XlaGpuDialect",
+  ];
+
+  let constructor = "CreatePipelineLoadsPass()";
 }
 
 #endif  // XLA_CODEGEN_EMITTERS_TRANSFORMS_PASSES_TD_

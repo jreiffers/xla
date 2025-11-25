@@ -279,6 +279,77 @@ void SyncThreadsOp::getAsmResultNames(
   }
 }
 
+//===----------------------------------------------------------------------===//
+// AllocatePipeOp
+//===----------------------------------------------------------------------===//
+
+LogicalResult AllocatePipeOp::verify() {
+  return success();
+}
+
+//===----------------------------------------------------------------------===//
+// DequeueOp
+//===----------------------------------------------------------------------===//
+
+LogicalResult DequeueOp::inferReturnTypes(
+    MLIRContext* context, std::optional<Location> location, ValueRange operands,
+    mlir::DictionaryAttr attributes, mlir::OpaqueProperties properties,
+    mlir::RegionRange regions,
+    mlir::SmallVectorImpl<Type>& inferredReturnTypes) {
+  auto in_pipe_ty =  mlir::cast<SharedMemoryPipeType>(operands[0].getType());
+  inferredReturnTypes.push_back(in_pipe_ty.getElementType());
+  inferredReturnTypes.push_back(in_pipe_ty.cloneWithLevel(in_pipe_ty.getLevel() - 1));
+  return success();
+}
+
+LogicalResult DequeueOp::verify() {
+  return success();
+}
+
+//===----------------------------------------------------------------------===//
+// EnqueueOp
+//===----------------------------------------------------------------------===//
+
+LogicalResult EnqueueOp::inferReturnTypes(
+    MLIRContext* context, std::optional<Location> location, ValueRange operands,
+    mlir::DictionaryAttr attributes, mlir::OpaqueProperties properties,
+    mlir::RegionRange regions,
+    mlir::SmallVectorImpl<Type>& inferredReturnTypes) {
+  auto in_pipe_ty = mlir::cast<SharedMemoryPipeType>(operands[0].getType());
+  inferredReturnTypes.push_back(in_pipe_ty.cloneWithLevel(in_pipe_ty.getLevel() + 1));
+  return success();
+}
+
+LogicalResult EnqueueOp::verify() {
+  return success();
+}
+
+//===----------------------------------------------------------------------===//
+// EnqueueUndefOp
+//===----------------------------------------------------------------------===//
+
+LogicalResult EnqueueUndefOp::inferReturnTypes(
+    MLIRContext* context, std::optional<Location> location, ValueRange operands,
+    mlir::DictionaryAttr attributes, mlir::OpaqueProperties properties,
+    mlir::RegionRange regions,
+    mlir::SmallVectorImpl<Type>& inferredReturnTypes) {
+  auto in_pipe_ty = mlir::cast<SharedMemoryPipeType>(operands[0].getType());
+  inferredReturnTypes.push_back(in_pipe_ty.cloneWithLevel(in_pipe_ty.getLevel() + 1));
+  return success();
+}
+
+LogicalResult EnqueueUndefOp::verify() {
+  return success();
+}
+
+//===----------------------------------------------------------------------===//
+// AsyncCopyStartOp
+//===----------------------------------------------------------------------===//
+
+LogicalResult AsyncCopyStartOp::verify() {
+  return success();
+}
+
 }  // namespace gpu
 }  // namespace xla
 

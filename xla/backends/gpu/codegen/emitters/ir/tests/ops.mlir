@@ -78,3 +78,28 @@ func.func @shuffler(%a: f32, %b: i32) -> (f32, i32) {
 // CHECK:        xla_gpu.shuffle_reduce(%[[IN1]], %[[IN2]]) to 4
 // CHECK-SAME:    combiner=@do_nothing {xla.range = [0 : index, 42 : index]}
 // CHECK-SAME:    : f32, i32
+
+// -----
+
+func.func @pipes(%lead: i1, %a: tensor<128x128xf32>) -> (tensor<128xf32>, tensor<128xf32>) {
+  %pipe = xla_gpu.allocate_pipe(%lead) : !xla_gpu.shmem_pipe<4*tensor<128xf32>, 0>
+  %c0 = arith.constant 0 : index
+  %c1 = arith.constant 1 : index
+  %enq1 = xla_gpu.enqueue %a[%c0, %c0] into %pipe : tensor<128x128xf32> into !xla_gpu.shmem_pipe<4*tensor<128xf32>, 0>
+  %enq2 = xla_gpu.enqueue %a[%c1, $c0] into %enq1 : tensor<128x128xf32> into !xla_gpu.shmem_pipe<4*tensor<128xf32>, 1>
+  %val1, %deq1 = xla_gpu.dequeue %enq2 : !xla_gpu.shmem_pipe<4*tensor<128xf32>, 2>
+  %val2, %deq2 = xla_gpu.dequeue %deq1 : !xla_gpu.shmem_pipe<4*tensor<128xf32>, 1>
+  return %val1, %val2 : tensor<128xf32>, tensor<128xf32>
+}
+
+// CHECK-LABEL: @pipes
+// CHECK: allocate_pipe
+// CHECK-SAME:   4 * tensor<128xf32>, 0
+// CHECK: enqueue
+// CHECK-SAME:   4 * tensor<128xf32>, 0
+// CHECK: enqueue
+// CHECK-SAME:   4 * tensor<128xf32>, 1
+// CHECK: dequeue
+// CHECK-SAME:   4 * tensor<128xf32>, 2
+// CHECK: dequeue
+// CHECK-SAME:   4 * tensor<128xf32>, 1

@@ -12,6 +12,11 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
+
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+#pragma clang diagnostic ignored "-W#pragma-messages"
+
+
 #include <cstdint>
 #include <memory>
 #include <numeric>
@@ -50,6 +55,7 @@ limitations under the License.
 #include "xla/codegen/emitters/transforms/passes.h"
 #include "xla/stream_executor/device_description.h"
 #include "xla/tsl/platform/status.h"
+#include "xla/codegen/emitters/transforms/vectorization_and_pipelining_utils.h"
 
 namespace xla {
 namespace emitters {
@@ -72,6 +78,7 @@ namespace scf = mlir::scf;
 //
 // Example: the stride of `d0` in `(d0 + d1)` is 1.
 // Example: the stride of `d0` in `d0 * 2` is unknown (nullopt).
+// TODO: use GetStrides from vectorization_and_pipelining_utils.
 std::optional<int> GetStride(mlir::AffineExpr expr,
                              mlir::AffineExpr dim_or_sym) {
   if (auto binop = mlir::dyn_cast_or_null<mlir::AffineBinaryOpExpr>(expr)) {
@@ -92,40 +99,6 @@ std::optional<int> GetStride(mlir::AffineExpr expr,
     return std::nullopt;
   }
   return expr == dim_or_sym ? 1 : 0;
-}
-
-int64_t GetAlignmentOfRemainder(mlir::AffineExpr expr,
-                                mlir::AffineExpr dim_or_sym) {
-  if (auto binop = mlir::dyn_cast_or_null<mlir::AffineBinaryOpExpr>(expr)) {
-    auto lhs_align = GetAlignmentOfRemainder(binop.getLHS(), dim_or_sym);
-    auto rhs_align = GetAlignmentOfRemainder(binop.getRHS(), dim_or_sym);
-
-    std::optional<int64_t> rhs_cst = std::nullopt;
-    if (binop.getRHS().getKind() == mlir::AffineExprKind::Constant) {
-      rhs_cst = mlir::cast<mlir::AffineConstantExpr>(binop.getRHS()).getValue();
-    }
-
-    switch (binop.getKind()) {
-      case mlir::AffineExprKind::Add:
-        if (binop.getLHS() == dim_or_sym) return rhs_align;
-        if (binop.getRHS() == dim_or_sym) return lhs_align;
-        return std::gcd(lhs_align, rhs_align);
-      case mlir::AffineExprKind::Mul:
-        return lhs_align * rhs_align;
-      case mlir::AffineExprKind::FloorDiv:
-      case mlir::AffineExprKind::CeilDiv:
-        return 1;
-      case mlir::AffineExprKind::Mod:
-        // (a * c) % (b * c) = (a % b) * c.
-        return std::gcd(lhs_align, rhs_align);
-      default:
-        llvm_unreachable("expr is none of the binary expressions");
-    }
-  }
-  if (auto cst = mlir::dyn_cast<mlir::AffineConstantExpr>(expr)) {
-    return cst.getValue();
-  }
-  return 1;
 }
 
 // Attempts to extract the vector type for the given loop. This means:
@@ -243,8 +216,9 @@ std::optional<Value> GetVectorBaseIndices(Value index, scf::ForOp loop,
     return std::nullopt;
   }
 
-  if (GetAlignmentOfRemainder(map.getResult(0), induction_var_expr) %
-      vector_type.getNumElements()) {
+  auto base_index = map.getResult(0).replace(induction_var_expr, 
+                                             getAffineConstantExpr(0, b.getContext()));
+  if ((base_index.getLargestKnownDivisor() % vector_type.getNumElements()) != 0) {
     return std::nullopt;
   }
 
@@ -253,11 +227,6 @@ std::optional<Value> GetVectorBaseIndices(Value index, scf::ForOp loop,
 
   return b.create<ApplyIndexingOp>(operands, apply_indexing.getIndexingMap())
       ->getResult(0);
-}
-
-bool IsConflictFree(mlir::tensor::ExtractOp op) {
-  return op.getTensor().getParentRegion()->isProperAncestor(
-      op->getParentRegion());
 }
 
 struct VectorizeLoad : mlir::OpRewritePattern<mlir::tensor::ExtractOp> {
@@ -270,7 +239,7 @@ struct VectorizeLoad : mlir::OpRewritePattern<mlir::tensor::ExtractOp> {
     if (!loop) {
       return rewriter.notifyMatchFailure(op, "no loop found");
     }
-    if (!IsConflictFree(op)) {
+    if (!IsConflictFree(op, loop)) {
       return rewriter.notifyMatchFailure(op,
                                          "source may be written in the loop");
     }

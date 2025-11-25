@@ -12,6 +12,9 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+#pragma clang diagnostic ignored "-W#pragma-messages"
+
 #include <cassert>
 #include <cstdint>
 #include <memory>
@@ -74,6 +77,7 @@ limitations under the License.
 #include "xla/util.h"
 #include "xla/xla_data.pb.h"
 #include "tsl/platform/protobuf.h"  // IWYU pragma: keep
+#include "mlir/Dialect/LLVMIR/NVVMDialect.h"  // IWYU pragma: keep
 
 namespace xla {
 namespace emitters {
@@ -152,6 +156,21 @@ std::optional<int> GetAlignmentFromArg(Value addr, ValueRange indices) {
       func.getArgAttr(base.getArgNumber(), ml::LLVMDialect::getAlignAttrName());
   if (!align_attr) return std::nullopt;
   return mlir::cast<mlir::IntegerAttr>(align_attr).getValue().getSExtValue();
+}
+
+static ml::InlineAsmOp CreateInlineAsm(OpBuilder& b, Location loc,
+                     TypeRange resultTypes,
+                     ValueRange operands,
+                     const std::string& asm_string,
+                     const std::string& constraints) {
+  auto asm_dialect =
+    ml::AsmDialectAttr::get(b.getContext(), ml::AsmDialect::AD_ATT);
+  return b.create<ml::InlineAsmOp>(loc, resultTypes, operands, asm_string,
+                   constraints,
+                   /*has_side_effects=*/true,
+                   /*is_align_stack=*/false,
+                   ml::TailCallKind::None, asm_dialect,
+                   /*operand_attrs=*/mlir::ArrayAttr());
 }
 
 template <typename Op>
@@ -361,10 +380,8 @@ std::tuple<Value, Value> GetSubByteIndex(Value linear_index, int bit_width,
   return {i8_index, sub_byte_shift};
 }
 
-ml::GEPOp CreateGep(TypedValue<mlir::RankedTensorType> tensor,
-                    Value linear_index, mlir::ImplicitLocOpBuilder& b) {
-  mlir::RankedTensorType tensor_type = tensor.getType();
-  Type element_type = tensor_type.getElementType();
+ml::GEPOp CreateGep(Value tensor_ptr, mlir::RankedTensorType tensor_type, Value linear_index, mlir::ImplicitLocOpBuilder& b) {
+  auto element_type = tensor_type.getElementType();
   int64_t num_elements = tensor_type.getNumElements();
   std::optional<int> sub_byte_width = GetSubByteBitWidth(element_type);
   if (sub_byte_width) {
@@ -372,18 +389,28 @@ ml::GEPOp CreateGep(TypedValue<mlir::RankedTensorType> tensor,
     // Elements are packed.
     num_elements = CeilOfRatio<int64_t>(num_elements, 8 / *sub_byte_width);
   }
-  auto ptr = ml::LLVMPointerType::get(b.getContext());
-  auto tensor_ptr =
-      b.create<UnrealizedConversionCastOp>(ptr, tensor).getResult(0);
   mlir::LLVMTypeConverter converter(b.getContext());
   auto llvm_element_type = converter.convertType(element_type);
   auto array_type =
       b.getType<ml::LLVMArrayType>(llvm_element_type, num_elements);
+  auto ptr = ml::LLVMPointerType::get(b.getContext());
+  if (linear_index.getType().isIndex()) {
+    linear_index = GetLinearIndex(linear_index, b);
+  }
   auto gep = b.create<ml::GEPOp>(
       ptr, array_type, tensor_ptr,
       llvm::SmallVector<mlir::LLVM::GEPArg>{0, linear_index});
   gep.setNoWrapFlags(mlir::LLVM::GEPNoWrapFlags::inbounds);
-  return gep;
+  return gep; 
+}
+
+ml::GEPOp CreateGep(TypedValue<mlir::RankedTensorType> tensor,
+                    Value linear_index, mlir::ImplicitLocOpBuilder& b) {
+  mlir::RankedTensorType tensor_type = tensor.getType();
+  auto ptr = ml::LLVMPointerType::get(b.getContext());
+  auto tensor_ptr =
+      b.create<UnrealizedConversionCastOp>(ptr, tensor).getResult(0);
+  return CreateGep(tensor_ptr, tensor_type, linear_index, b);
 }
 
 ml::GEPOp CreateGep(TypedValue<mlir::RankedTensorType> tensor,
@@ -430,6 +457,39 @@ struct RewriteTensorExtract : OpRewritePattern<mlir::tensor::ExtractOp> {
                                                               load);
     }
     return success();
+  }
+};
+
+struct RewriteTensorExtractSlice : OpRewritePattern<mlir::tensor::ExtractSliceOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(
+      mlir::tensor::ExtractSliceOp op,
+      mlir::PatternRewriter& rewriter) const override {
+    mlir::ImplicitLocOpBuilder b(op.getLoc(), rewriter);
+    auto tensor = op.getSource();
+    if (tensor.getType().getRank() > 1) {
+      return llvm::failure();
+    }
+
+    auto linear_index = GetLinearIndex(
+      mlir::getValueOrCreateConstantIndexOp(rewriter, op.getLoc(), op.getMixedOffsets()), b);
+    Type element_type = tensor.getType().getElementType();
+    Value sub_byte_shift = nullptr;
+    std::optional<int> sub_byte_width = GetSubByteBitWidth(element_type);
+    if (sub_byte_width) {
+      std::tie(linear_index, sub_byte_shift) =
+          GetSubByteIndex(linear_index, *sub_byte_width, b);
+    }
+
+    // TODO: if sub_byte_shift is not 0, this is invalid. See if we can make this safe.
+    
+    mlir::Value gep = CreateGep(tensor, linear_index, b);
+
+    // Cast back to the original tensor type.
+    rewriter.replaceOpWithNewOp<UnrealizedConversionCastOp>(op, op.getType(), gep);
+
+    return mlir::success();
   }
 };
 
@@ -746,6 +806,151 @@ struct RewriteAllocateShared : OpRewritePattern<gpu::AllocateSharedOp> {
             .create<ml::AddrSpaceCastOp>(
                 op.getLoc(), ml::LLVMPointerType::get(op.getContext()), addr)
             .getResult());
+    return success();
+  }
+};
+
+// Compute the transaction size in bytes for a shared memory pipe, which is the byte size
+// of the pipe's element type.
+int64_t TensorSizeBytes(mlir::RankedTensorType tensor_ty) {
+  return
+      tensor_ty.getNumElements() *
+      tensor_ty.getElementType().getIntOrFloatBitWidth() /
+      CHAR_BIT;
+}
+
+struct RewriteInitMembars : OpRewritePattern<gpu::InitMembarsOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(
+      gpu::InitMembarsOp op,
+      mlir::PatternRewriter& rewriter) const override {
+    int n_membars = op.getResult().getType().getShape().front();
+
+    rewriter.setInsertionPoint(op);
+    auto is_leader = op.getIsLeader();
+
+    mlir::ImplicitLocOpBuilder b(op.getLoc(), rewriter);
+    auto init_mbars =
+        b.create<scf::IfOp>(/*resultTypes=*/TypeRange{}, is_leader,
+                            /*addThenBlock=*/true, /*addElseBlock=*/false);
+ 
+    b.setInsertionPointToStart(init_mbars.thenBlock());
+    auto n_threads = b.create<arith::ConstantIntOp>(op.getThreadCount(), /*width=*/32);
+    
+    for (int i = 0; i < n_membars; ++i) {
+      auto mbar = CreateGep(op.getMembars(), b.create<arith::ConstantIndexOp>(i), b);
+      b.create<mlir::NVVM::MBarrierInitOp>(/*addr=*/mbar, /*count=*/n_threads, /*predicate=*/mlir::Value());
+    }
+    b.create<scf::YieldOp>();
+
+    b.setInsertionPoint(op);
+    b.create<mlir::gpu::BarrierOp>();
+
+    auto read_idx = b.create<arith::ConstantIndexOp>(op.getLoc(), 0);
+    rewriter.replaceOpWithNewOp<UnrealizedConversionCastOp>(
+        op, mlir::TypeRange(op->getResults()), op.getMembars()
+    );
+    return success();
+  }
+};
+
+struct RewriteAsyncCopyStart : OpRewritePattern<gpu::AsyncCopyStartOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(
+      gpu::AsyncCopyStartOp op,
+      mlir::PatternRewriter& rewriter) const override {
+    mlir::ImplicitLocOpBuilder b(op.getLoc(), rewriter);
+
+    // The write index is ((read-idx + level) % capacity) * element-count. The level is statically known from the pipe type.
+    mlir::Value idx = op.getOffset();
+    auto write_offset = b.create<arith::MulIOp>(idx, b.create<arith::ConstantIndexOp>(op.getSource().getType().getNumElements()));
+
+    auto dest = CreateGep(op.getBuffer(), write_offset, b);
+    auto mbar = CreateGep(op.getMembars(), idx, b);
+    int64_t size = TensorSizeBytes(op.getSource().getType());
+
+    auto start_load =
+        b.create<scf::IfOp>(/*resultTypes=*/TypeRange{}, op.getIsLeader(),
+                            /*addThenBlock=*/true, /*addElseBlock=*/false);
+    b.setInsertionPointToStart(start_load.thenBlock());
+
+    auto ptr = ml::LLVMPointerType::get(b.getContext());
+    auto source =
+      b.create<UnrealizedConversionCastOp>(ptr, op.getSource()).getResult(0);
+
+    CreateInlineAsm(b, b.getLoc(), TypeRange{}, ValueRange{dest, source, mbar},
+            absl::StrCat("cp.async.bulk.shared::cta.global.mbarrier::complete_tx::bytes [$0], [$1], ", size, ", [$2];"),
+            "l,l,r,l");
+    b.create<scf::YieldOp>();
+    
+    b.setInsertionPoint(op);
+
+    rewriter.replaceOp(op, mlir::ValueRange{op.getBuffer(), op.getMembars()});
+    return success();
+  }
+};
+
+struct RewriteAsyncCopyWait : OpRewritePattern<gpu::AsyncCopyWaitOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(
+      gpu::AsyncCopyWaitOp op,
+      mlir::PatternRewriter& rewriter) const override {
+    mlir::ImplicitLocOpBuilder b(op.getLoc(), rewriter);
+
+    auto read_offset = b.create<arith::MulIOp>(op.getOffset(), b.create<arith::ConstantIndexOp>(op.getOutElement().getType().getNumElements()));
+    mlir::Value data_ptr = CreateGep(op.getBuffer(), read_offset, b);
+    auto mbar_ptr = CreateGep(op.getMembars(), op.getOffset(), b);
+
+    // Wait for the transaction to complete. The arrive instructions return a
+    // token which we yield from the conditional; then we spin calling
+    // mbarrier.try_wait.shared::cta.b64 in an scf.for loop until it returns 0.
+    int64_t tx_size = TensorSizeBytes(op.getOutElement().getType());
+    Value tx_size_value = b.create<arith::ConstantIntOp>(b.getI64Type(), tx_size);
+    auto arrive = b.create<scf::IfOp>(op.getIsLeader(),
+                                      [&](OpBuilder& nested_b, Location nested_loc) {
+                                        // Leader: arrive and wait for transaction to complete.
+                                        mlir::ImplicitLocOpBuilder nb(nested_loc, nested_b);
+                                        auto arrive_leader = CreateInlineAsm(
+                                            nb, nested_loc, TypeRange{nb.getI64Type()},
+                                            ValueRange{mbar_ptr, tx_size_value},
+                                            "mbarrier.arrive.expect_tx.relaxed.cta.shared::cta.b64 $0, [$1], $2;",
+                                            "=l,l,r");
+                                        nb.create<scf::YieldOp>(ValueRange{arrive_leader.getResult(0)});
+                                      },
+                                      [&](OpBuilder& nested_b, Location nested_loc) {
+                                        // Non-leader: just arrive.
+                                        mlir::ImplicitLocOpBuilder nb(nested_loc, nested_b);
+                                        auto arrive_non_leader = CreateInlineAsm(
+                                            nb, nested_loc, TypeRange{nb.getI64Type()},
+                                            ValueRange{mbar_ptr},
+                                            "mbarrier.arrive.shared.b64 $0, [$1];",
+                                            "=l,l");
+                                        nb.create<scf::YieldOp>(ValueRange{arrive_non_leader.getResult(0)});
+                                      });
+
+    Value token = arrive.getResult(0);
+    Value cont_init = b.create<arith::ConstantIntOp>(b.getI1Type(), 1);
+
+    b.setInsertionPointAfter(arrive);
+    b.create<scf::WhileOp>(b.getLoc(), TypeRange{b.getI1Type()}, ValueRange{cont_init},
+                           [&](OpBuilder& nested_b, Location nested_loc, ValueRange values) {
+                             mlir::ImplicitLocOpBuilder nb(nested_loc, nested_b);
+                             auto try_wait = CreateInlineAsm(
+                               nb, nested_loc, TypeRange{nb.getI32Type()}, ValueRange{mbar_ptr, token},
+                               "mbarrier.try_wait.shared::cta.b64 $0, [$1], $2;",
+                               "=l,l,l");
+                             Value status = try_wait.getResult(0);
+                             Value cont = nb.create<arith::CmpIOp>(arith::CmpIPredicate::ne, status, nb.create<arith::ConstantIntOp>(nb.getI32Type(), 0));
+                             nb.create<scf::ConditionOp>(cont, ValueRange{cont});
+                           },
+                           [&](OpBuilder& nested_b, Location nested_loc, ValueRange values) {
+                             nested_b.create<scf::YieldOp>(nested_loc, values);
+                           });
+
+    rewriter.replaceOp(op, ValueRange{data_ptr, op.getMembars()});
     return success();
   }
 };
@@ -1354,7 +1559,8 @@ class LowerTensorsPass : public impl::LowerTensorsPassBase<LowerTensorsPass> {
     tensor_patterns
         .add<RewriteAllocateShared, RewriteNonScalarConstants,
              RewriteSyncThreads, RewriteTensorExtract, RewriteTransferRead,
-             RewriteTensorInsert, RewriteTransferWrite>(mlir_context);
+             RewriteTensorInsert, RewriteTransferWrite, RewriteTensorExtractSlice,
+             RewriteAsyncCopyStart, RewriteAsyncCopyWait, RewriteInitMembars>(mlir_context);
     if (mlir::failed(mlir::applyPatternsGreedily(getOperation(),
                                                  std::move(tensor_patterns)))) {
       signalPassFailure();

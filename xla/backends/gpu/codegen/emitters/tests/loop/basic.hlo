@@ -1,0 +1,79 @@
+// RUN: fusion_to_mlir %s | emitters_opt -xla-test-optimize -xla-gpu-test-transform-loops   --mlir-print-ir-after-all
+
+
+// xxxRUN:
+//gpu_test_correctness %s
+
+f {
+  p0 = f32[1024,1024] parameter(0)
+  ROOT add = f32[1024,1024] add(p0,p0)
+}
+
+// Output (unrolling is currently completely disabled):
+
+// #indexing_map = #xla.indexing_map<"(bl_x) -> (bl_x * 512), domain: bl_x in [0, 511]">                                                                                                 [20/1902]
+// #indexing_map1 = #xla.indexing_map<"(bl_x) -> (bl_x * 512 + 262144), domain: bl_x in [0, 511]">
+// #indexing_map2 = #xla.indexing_map<"(th_x, bl_x, d2) -> (th_x * 4 + bl_x * 512 + d2 * 262144), domain: th_x in [0, 127], bl_x in [0, 511], d2 in [0, 3]">
+// #indexing_map3 = #xla.indexing_map<"(th_x) -> (th_x * 4), domain: th_x in [0, 127]">
+// #indexing_map4 = #xla.indexing_map<"(bl_x, d1) -> (bl_x * 512 + d1 * 262144), domain: bl_x in [0, 511], d1 in [0, 3]">
+// module @fusion_kernel_module attributes {dlti.dl_spec = #dlti.dl_spec<index = 32 : i32>} {
+//   func.func @main(%arg0: tensor<1048576xf32> {xla.slice_index = 0 : index}, %arg1: tensor<1048576xf32> {xla.slice_index = 1 : index}) -> tensor<1048576xf32> attributes {xla.backend_kind = #xl
+// a.backend_kind<gpu>, xla.entry} {
+//     %0 = ub.poison : f32
+//     %cst = arith.constant dense<0.000000e+00> : vector<4xf32>
+//     %c2 = arith.constant 2 : index
+//     %c1 = arith.constant 1 : index
+//     %c0 = arith.constant 0 : index
+//     %c4 = arith.constant 4 : index
+//     %c127 = arith.constant 127 : index
+//     %c511 = arith.constant 511 : index
+//     %block_id_x = gpu.block_id  x {xla.range = [0 : index, 511 : index]}
+//     %thread_id_x = gpu.thread_id  x {xla.range = [0 : index, 127 : index]}
+//     %1 = arith.cmpi sge, %thread_id_x, %c0 : index
+//     %2 = arith.cmpi sle, %thread_id_x, %c127 : index
+//     %3 = arith.andi %1, %2 : i1
+//     %4 = arith.cmpi sge, %block_id_x, %c0 : index
+//     %5 = arith.cmpi sle, %block_id_x, %c511 : index
+//     %6 = arith.andi %4, %5 : i1
+//     %7 = arith.andi %3, %6 : i1
+//     %8 = scf.if %7 -> (tensor<1048576xf32>) {
+//       %9 = arith.cmpi eq, %thread_id_x, %c0 : index
+//       %10 = xla_gpu.allocate_pipe(%9, 128) : <2 * tensor<512xf32>, 0>
+//       %11 = xla.apply_indexing #indexing_map(%block_id_x)
+//       %extracted_slice = tensor.extract_slice %arg0[%11] [512] [1] : tensor<1048576xf32> to tensor<512xf32>
+//       %12 = xla_gpu.enqueue %extracted_slice into %10 : tensor<512xf32> into <2 * tensor<512xf32>, 0>
+//       %13 = xla.apply_indexing #indexing_map1(%block_id_x)
+//       %extracted_slice_0 = tensor.extract_slice %arg0[%13] [512] [1] : tensor<1048576xf32> to tensor<512xf32>
+//       %14 = xla_gpu.enqueue %extracted_slice_0 into %12 : tensor<512xf32> into <2 * tensor<512xf32>, 1>
+//       %15:2 = scf.for %arg2 = %c0 to %c4 step %c1 iter_args(%arg3 = %arg1, %arg4 = %14) -> (tensor<1048576xf32>, !xla_gpu.shmem_pipe<2 * tensor<512xf32>, 2>) {
+//         %tensor, %out_pipe = xla_gpu.dequeue %arg4 : <2 * tensor<512xf32>, 2>
+//         %16 = xla.apply_indexing #indexing_map2(%thread_id_x, %block_id_x, %arg2)
+//         %17 = xla.apply_indexing #indexing_map3(%thread_id_x)
+//         %18 = vector.transfer_read %tensor[%17], %0 {in_bounds = [true]} : tensor<512xf32>, vector<4xf32>
+//         %19 = scf.for %arg5 = %c0 to %c4 step %c1 iter_args(%arg6 = %cst) -> (vector<4xf32>) {
+//           %24 = vector.extract %18[%arg5] : f32 from vector<4xf32>
+//           %25 = arith.addf %24, %24 : f32
+//           %26 = vector.insert %25, %arg6 [%arg5] : f32 into vector<4xf32>
+//           scf.yield %26 : vector<4xf32>
+//         }
+//         %20 = vector.transfer_write %19, %arg3[%16] {in_bounds = [true]} : vector<4xf32>, tensor<1048576xf32>
+//         %21 = arith.addi %arg2, %c2 : index
+//         %22 = arith.cmpi ult, %21, %c4 : index
+//         %23 = scf.if %22 -> (!xla_gpu.shmem_pipe<2 * tensor<512xf32>, 2>) {
+//           %24 = xla.apply_indexing #indexing_map4(%block_id_x, %21)
+//           %extracted_slice_1 = tensor.extract_slice %arg0[%24] [512] [1] : tensor<1048576xf32> to tensor<512xf32>
+//           %25 = xla_gpu.enqueue %extracted_slice_1 into %out_pipe : tensor<512xf32> into <2 * tensor<512xf32>, 1>
+//           scf.yield %25 : !xla_gpu.shmem_pipe<2 * tensor<512xf32>, 2>
+//         } else {
+//           %24 = xla_gpu.enqueue_undef %out_pipe : <2 * tensor<512xf32>, 1>
+//           scf.yield %24 : !xla_gpu.shmem_pipe<2 * tensor<512xf32>, 2>
+//         }
+//         scf.yield %20, %23 : tensor<1048576xf32>, !xla_gpu.shmem_pipe<2 * tensor<512xf32>, 2>
+//       }
+//       scf.yield %15#0 : tensor<1048576xf32>
+//     } else {
+//       scf.yield %arg1 : tensor<1048576xf32>
+//     }
+//     return %8 : tensor<1048576xf32>
+//   }
+// }

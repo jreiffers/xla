@@ -101,9 +101,15 @@ class LaunchDimensions {
 };
 
 struct LaunchDimensionsConfig {
-  // The kernel implementation will be unrolled if `unroll_factor` is
-  // greater than one.
+  // The kernel implementation will be unrolled if either unroll factor is
+  // greater than one. Setting `unroll_factor` results in unrolling along the
+  // minor dimension and vectorization. Setting `unroll_factor_major` results
+  // in unrolling along a major dimension, resulting in multiple independent
+  // memory accesses per thread. Depending on the implementation, this may
+  // not be the major-most dimension (e.g. it might be a major dimension within
+  // a sub-tile).
   int unroll_factor = 1;
+  int unroll_factor_major = 1;
 };
 
 // Returns -1 if the shape doesn't allow the row vectorization code path.

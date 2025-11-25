@@ -79,7 +79,7 @@ LaunchDimensions CalculateLaunchDimensions(
     int64_t num_blocks_total = CeilOfRatio(num_elements, threads_per_block);
     int64_t num_blocks_y = CeilOfRatio<uint64_t>(
         num_blocks_total, gpu_device_info.block_dim_limit().x);
-    int64_t num_blocks_x = CeilOfRatio(num_blocks_total, num_blocks_y);
+    int64_t num_blocks_x = CeilOfRatio(num_blocks_total, num_blocks_y * dim_config.unroll_factor_major);
 
     return LaunchDimensions(se::BlockDim(num_blocks_x, num_blocks_y, 1),
                             se::ThreadDim(threads_per_block, 1, 1));
