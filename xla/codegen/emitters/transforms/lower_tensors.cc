@@ -132,25 +132,7 @@ func::FuncOp GetOrInsertDeclaration(mlir::PatternRewriter& rewriter,
   return func_decl;
 }
 
-// TODO: This should exist somewhere else, probably?
-func::FuncOp GetCpAsyncBulkSharedCtaGlobalFunc(mlir::PatternRewriter& rewriter,
-                                               mlir::ModuleOp& module_op) {
-  absl::string_view name = "llvm.nvvm.cp.async.bulk.global.to.shared.cta";
-  auto ptr_shared_ty = mlir::LLVM::LLVMPointerType::get(rewriter.getContext(), 3);
-  auto ptr_ty = mlir::LLVM::LLVMPointerType::get(rewriter.getContext());
-  auto func_ty = rewriter.getFunctionType(
-      {ptr_shared_ty, ptr_shared_ty, ptr_ty, rewriter.getI32Type(), rewriter.getI64Type(), rewriter.getI1Type()}, {});
-  return GetOrInsertDeclaration(rewriter, module_op, name, func_ty);
-}
-
-func::FuncOp GetMBarrierArriveFunc(mlir::PatternRewriter& rewriter,
-                                   mlir::ModuleOp& module_op) {
-  absl::string_view name = "llvm.nvvm.mbarrier.arrive.scope.cta.space.cta";
-  auto ptr_ty = mlir::LLVM::LLVMPointerType::get(rewriter.getContext(), 3);
-  auto func_ty = rewriter.getFunctionType({ptr_ty, rewriter.getI32Type()}, {rewriter.getI64Type()});
-  return GetOrInsertDeclaration(rewriter, module_op, name, func_ty);
-}
-
+// TODO: These should probably be in NVVM.
 func::FuncOp GetMBarrierArriveExpectTxFunc(mlir::PatternRewriter& rewriter,
                                            mlir::ModuleOp& module_op) {
   absl::string_view name = "llvm.nvvm.mbarrier.arrive.expect.tx.relaxed.scope.cta.space.cta";
@@ -929,14 +911,12 @@ struct RewriteAsyncCopyStart : OpRewritePattern<gpu::AsyncCopyStartOp> {
     auto shared_ptr = ml::LLVMPointerType::get(b.getContext(), 3);
     auto mbar_shared = b.create<ml::AddrSpaceCastOp>(shared_ptr, mbar).getResult();
     auto dest_shared = b.create<ml::AddrSpaceCastOp>(shared_ptr, dest).getResult();
+    auto global_ptr = ml::LLVMPointerType::get(b.getContext(), 1);
+    auto source_global = b.create<ml::AddrSpaceCastOp>(global_ptr, source).getResult();
 
-    auto cp_async_bulk_func = GetCpAsyncBulkSharedCtaGlobalFunc(rewriter, module_op_);
-    b.create<func::CallOp>(
-        cp_async_bulk_func,
-        ValueRange{dest_shared, mbar_shared, source,
-                   b.create<arith::ConstantIntOp>(b.getI32Type(), size),
-                   b.create<arith::ConstantIntOp>(b.getI64Type(), 0),
-                   b.create<arith::ConstantIntOp>(b.getI1Type(), 0)});
+    b.create<mlir::NVVM::CpAsyncBulkGlobalToSharedClusterOp>(
+        dest_shared, source_global, mbar_shared, 
+        b.create<arith::ConstantIntOp>(b.getI32Type(), size), Value(), Value());
     b.create<scf::YieldOp>();
     
     b.setInsertionPoint(op);
@@ -970,7 +950,6 @@ struct RewriteAsyncCopyWait : OpRewritePattern<gpu::AsyncCopyWaitOp> {
     // mbarrier.try_wait.shared::cta.b64 in an scf.for loop until it returns 0.
     int64_t tx_size = TensorSizeBytes(op.getOutElement().getType());
     Value tx_size_value = b.create<arith::ConstantIntOp>(b.getI32Type(), tx_size);
-    auto arrive_func = GetMBarrierArriveFunc(rewriter, module_op_);
     auto try_wait_func = GetMBarrierTryWaitFunc(rewriter, module_op_);
     auto arrive_expect_tx_func = GetMBarrierArriveExpectTxFunc(rewriter, module_op_);
 
@@ -980,6 +959,7 @@ struct RewriteAsyncCopyWait : OpRewritePattern<gpu::AsyncCopyWaitOp> {
                                       [&](OpBuilder& nested_b, Location nested_loc) {
                                         // Leader: arrive and wait for transaction to complete.
                                         mlir::ImplicitLocOpBuilder nb(nested_loc, nested_b);
+                                        // TODO: NVVM::MBarrierArriveExpectTxOp seems to have no result?
                                         auto arrive_leader = nested_b.create<func::CallOp>(
                                             nested_loc, arrive_expect_tx_func,
                                             ValueRange{mbar_shared_ptr, tx_size_value});
@@ -988,10 +968,9 @@ struct RewriteAsyncCopyWait : OpRewritePattern<gpu::AsyncCopyWaitOp> {
                                       [&](OpBuilder& nested_b, Location nested_loc) {
                                         // Non-leader: just arrive.
                                         mlir::ImplicitLocOpBuilder nb(nested_loc, nested_b);
-                                        auto arrive_non_leader = nested_b.create<func::CallOp>(
-                                            nested_loc, arrive_func,
-                                            ValueRange{mbar_shared_ptr, one});
-                                        nb.create<scf::YieldOp>(ValueRange{arrive_non_leader.getResult(0)});
+                                        auto arrive_non_leader = nested_b.create<mlir::NVVM::MBarrierArriveOp>(
+                                            nested_loc, nested_b.getI64Type(), mbar_shared_ptr);
+                                        nb.create<scf::YieldOp>(ValueRange{arrive_non_leader.getResult()});
                                       });
 
     Value token = arrive.getResult(0);

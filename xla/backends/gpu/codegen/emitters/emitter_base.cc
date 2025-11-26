@@ -468,7 +468,7 @@ void AddLoopTransformationPasses(mlir::OpPassManager& pm,
   // opportunities for LICM. This would not be necessary if LICM also moved
   // instructions over ifs.
   pm.addPass(mlir::createLoopInvariantCodeMotionPass());
-  pm.addPass(emitters::CreatePipelineLoadsPass());
+  pm.addNestedPass<FuncOp>(emitters::CreatePipelineLoadsPass());
   pm.addNestedPass<FuncOp>(emitters::CreateVectorizeLoadsAndStoresPass(device));
   // TODO: Check how we need to adjust unrolling rules for pipelined loops.
   // pm.addNestedPass<FuncOp>(CreateOptimizeLoopsPass());
@@ -479,6 +479,7 @@ void AddLoopTransformationPasses(mlir::OpPassManager& pm,
 void AddLoweringPasses(mlir::OpPassManager& pm,
                        const se::DeviceDescription& device) {
   pm.addNestedPass<FuncOp>(emitters::CreateConvertPureCallOpsPass());
+  pm.addPass(emitters::CreateLowerPipesPass());
   pm.addPass(emitters::CreateLowerTensorsPass(device));
   pm.addPass(mlir::createConvertComplexToStandardPass());
   pm.addPass(emitters::CreateMergePointersToSameSlicePass());
