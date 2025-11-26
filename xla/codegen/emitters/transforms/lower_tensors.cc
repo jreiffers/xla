@@ -105,9 +105,69 @@ using mlir::Value;
 using mlir::ValueRange;
 
 namespace arith = ::mlir::arith;
-namespace scf = ::mlir::scf;
+namespace func = ::mlir::func;
 namespace ml = ::mlir::LLVM;
+namespace scf = ::mlir::scf;
 namespace vector = ::mlir::vector;
+
+func::FuncOp GetOrInsertDeclaration(mlir::PatternRewriter& rewriter,
+                                    mlir::ModuleOp& module_op,
+                                    absl::string_view name,
+                                    mlir::FunctionType func_type) {
+  // Check if the function already exists
+  if (auto func = module_op.lookupSymbol<func::FuncOp>(name)) {
+    // Ensure the existing function has the correct type
+    if (func.getFunctionType() == func_type) {
+      return func;
+    }
+  }
+
+  // If not found or type mismatch, create the declaration
+  mlir::PatternRewriter::InsertionGuard insertGuard(rewriter);
+  rewriter.setInsertionPointToStart(module_op.getBody());
+
+  auto func_decl =
+      rewriter.create<func::FuncOp>(module_op.getLoc(), name, func_type);
+  func_decl.setPrivate();
+  return func_decl;
+}
+
+// TODO: This should exist somewhere else, probably?
+func::FuncOp GetCpAsyncBulkSharedCtaGlobalFunc(mlir::PatternRewriter& rewriter,
+                                               mlir::ModuleOp& module_op) {
+  absl::string_view name = "llvm.nvvm.cp.async.bulk.global.to.shared.cta";
+  auto ptr_shared_ty = mlir::LLVM::LLVMPointerType::get(rewriter.getContext(), 3);
+  auto ptr_ty = mlir::LLVM::LLVMPointerType::get(rewriter.getContext());
+  auto func_ty = rewriter.getFunctionType(
+      {ptr_shared_ty, ptr_shared_ty, ptr_ty, rewriter.getI32Type(), rewriter.getI64Type(), rewriter.getI1Type()}, {});
+  return GetOrInsertDeclaration(rewriter, module_op, name, func_ty);
+}
+
+func::FuncOp GetMBarrierArriveFunc(mlir::PatternRewriter& rewriter,
+                                   mlir::ModuleOp& module_op) {
+  absl::string_view name = "llvm.nvvm.mbarrier.arrive.scope.cta.space.cta";
+  auto ptr_ty = mlir::LLVM::LLVMPointerType::get(rewriter.getContext(), 3);
+  auto func_ty = rewriter.getFunctionType({ptr_ty, rewriter.getI32Type()}, {rewriter.getI64Type()});
+  return GetOrInsertDeclaration(rewriter, module_op, name, func_ty);
+}
+
+func::FuncOp GetMBarrierArriveExpectTxFunc(mlir::PatternRewriter& rewriter,
+                                           mlir::ModuleOp& module_op) {
+  absl::string_view name = "llvm.nvvm.mbarrier.arrive.expect.tx.relaxed.scope.cta.space.cta";
+  auto ptr_ty = mlir::LLVM::LLVMPointerType::get(rewriter.getContext(), 3);
+  auto func_ty = rewriter.getFunctionType({ptr_ty, rewriter.getI32Type()},
+                                          {rewriter.getI64Type()});
+  return GetOrInsertDeclaration(rewriter, module_op, name, func_ty);
+}
+
+func::FuncOp GetMBarrierTryWaitFunc(mlir::PatternRewriter& rewriter,
+                                    mlir::ModuleOp& module_op) {
+  absl::string_view name = "llvm.nvvm.mbarrier.try.wait.scope.cta.space.cta";
+  auto ptr_ty = mlir::LLVM::LLVMPointerType::get(rewriter.getContext(), 3);
+  auto func_ty = rewriter.getFunctionType({ptr_ty, rewriter.getI64Type()},
+                                          {rewriter.getI1Type()});
+  return GetOrInsertDeclaration(rewriter, module_op, name, func_ty);
+}
 
 Value GetDestinationBuffer(Value dest) {
   while (dest.getDefiningOp()) {
@@ -150,27 +210,12 @@ std::optional<int> GetAlignmentFromArg(Value addr, ValueRange indices) {
   auto base = mlir::dyn_cast<mlir::BlockArgument>(addr);
   if (!base) return std::nullopt;
   auto func =
-      mlir::dyn_cast<mlir::func::FuncOp>(base.getOwner()->getParentOp());
+      mlir::dyn_cast<func::FuncOp>(base.getOwner()->getParentOp());
   if (!func) return std::nullopt;
   auto align_attr =
       func.getArgAttr(base.getArgNumber(), ml::LLVMDialect::getAlignAttrName());
   if (!align_attr) return std::nullopt;
   return mlir::cast<mlir::IntegerAttr>(align_attr).getValue().getSExtValue();
-}
-
-static ml::InlineAsmOp CreateInlineAsm(OpBuilder& b, Location loc,
-                     TypeRange resultTypes,
-                     ValueRange operands,
-                     const std::string& asm_string,
-                     const std::string& constraints) {
-  auto asm_dialect =
-    ml::AsmDialectAttr::get(b.getContext(), ml::AsmDialect::AD_ATT);
-  return b.create<ml::InlineAsmOp>(loc, resultTypes, operands, asm_string,
-                   constraints,
-                   /*has_side_effects=*/true,
-                   /*is_align_stack=*/false,
-                   ml::TailCallKind::None, asm_dialect,
-                   /*operand_attrs=*/mlir::ArrayAttr());
 }
 
 template <typename Op>
@@ -180,15 +225,15 @@ bool IsSupportedTransfer(Op op) {
          op.getPermutationMap().isMinorIdentity();
 }
 
-class RewriteFunctionSignatures : public OpRewritePattern<mlir::func::FuncOp> {
+class RewriteFunctionSignatures : public OpRewritePattern<func::FuncOp> {
  public:
   RewriteFunctionSignatures(mlir::MLIRContext* context,
                             const DeviceSpec& device_spec)
-      : OpRewritePattern<mlir::func::FuncOp>(context),
+      : OpRewritePattern<func::FuncOp>(context),
         device_spec_(device_spec) {}
 
   LogicalResult matchAndRewrite(
-      mlir::func::FuncOp op, mlir::PatternRewriter& rewriter) const override {
+      func::FuncOp op, mlir::PatternRewriter& rewriter) const override {
     auto is_tensor = [](Type ty) {
       return mlir::isa<mlir::RankedTensorType>(ty);
     };
@@ -214,7 +259,7 @@ class RewriteFunctionSignatures : public OpRewritePattern<mlir::func::FuncOp> {
       new_results = {};
       auto terminator = op.getFunctionBody().front().getTerminator();
       rewriter.setInsertionPoint(terminator);
-      rewriter.replaceOpWithNewOp<mlir::func::ReturnOp>(terminator);
+      rewriter.replaceOpWithNewOp<func::ReturnOp>(terminator);
     }
 
     SmallVector<Type> new_operands(op.getFunctionType().getInputs());
@@ -695,11 +740,11 @@ struct RewriteTransferWrite : OpRewritePattern<vector::TransferWriteOp> {
   }
 };
 
-struct RewriteCall : OpRewritePattern<mlir::func::CallOp> {
+struct RewriteCall : OpRewritePattern<func::CallOp> {
   using OpRewritePattern::OpRewritePattern;
 
   LogicalResult matchAndRewrite(
-      mlir::func::CallOp op, mlir::PatternRewriter& rewriter) const override {
+      func::CallOp op, mlir::PatternRewriter& rewriter) const override {
     if (!llvm::any_of(op->getOperandTypes(), [](Type ty) {
           return mlir::isa<mlir::RankedTensorType>(ty);
         })) {
@@ -725,7 +770,7 @@ struct RewriteCall : OpRewritePattern<mlir::func::CallOp> {
         new_result_types.push_back(result_type);
       }
     }
-    auto new_call = rewriter.create<mlir::func::CallOp>(
+    auto new_call = rewriter.create<func::CallOp>(
         op.getLoc(), op.getCallee(), new_result_types, new_operands);
 
     if (new_call.getNumResults() == 0) {
@@ -847,7 +892,6 @@ struct RewriteInitMembars : OpRewritePattern<gpu::InitMembarsOp> {
     b.setInsertionPoint(op);
     b.create<mlir::gpu::BarrierOp>();
 
-    auto read_idx = b.create<arith::ConstantIndexOp>(op.getLoc(), 0);
     rewriter.replaceOpWithNewOp<UnrealizedConversionCastOp>(
         op, mlir::TypeRange(op->getResults()), op.getMembars()
     );
@@ -856,7 +900,9 @@ struct RewriteInitMembars : OpRewritePattern<gpu::InitMembarsOp> {
 };
 
 struct RewriteAsyncCopyStart : OpRewritePattern<gpu::AsyncCopyStartOp> {
-  using OpRewritePattern::OpRewritePattern;
+  RewriteAsyncCopyStart(mlir::MLIRContext* context,
+                        mlir::ModuleOp& module_op)
+      : OpRewritePattern(context), module_op_(module_op) {}
 
   LogicalResult matchAndRewrite(
       gpu::AsyncCopyStartOp op,
@@ -879,10 +925,18 @@ struct RewriteAsyncCopyStart : OpRewritePattern<gpu::AsyncCopyStartOp> {
     auto ptr = ml::LLVMPointerType::get(b.getContext());
     auto source =
       b.create<UnrealizedConversionCastOp>(ptr, op.getSource()).getResult(0);
+    
+    auto shared_ptr = ml::LLVMPointerType::get(b.getContext(), 3);
+    auto mbar_shared = b.create<ml::AddrSpaceCastOp>(shared_ptr, mbar).getResult();
+    auto dest_shared = b.create<ml::AddrSpaceCastOp>(shared_ptr, dest).getResult();
 
-    CreateInlineAsm(b, b.getLoc(), TypeRange{}, ValueRange{dest, source, mbar},
-            absl::StrCat("cp.async.bulk.shared::cta.global.mbarrier::complete_tx::bytes [$0], [$1], ", size, ", [$2];"),
-            "l,l,r,l");
+    auto cp_async_bulk_func = GetCpAsyncBulkSharedCtaGlobalFunc(rewriter, module_op_);
+    b.create<func::CallOp>(
+        cp_async_bulk_func,
+        ValueRange{dest_shared, mbar_shared, source,
+                   b.create<arith::ConstantIntOp>(b.getI32Type(), size),
+                   b.create<arith::ConstantIntOp>(b.getI64Type(), 0),
+                   b.create<arith::ConstantIntOp>(b.getI1Type(), 0)});
     b.create<scf::YieldOp>();
     
     b.setInsertionPoint(op);
@@ -890,10 +944,14 @@ struct RewriteAsyncCopyStart : OpRewritePattern<gpu::AsyncCopyStartOp> {
     rewriter.replaceOp(op, mlir::ValueRange{op.getBuffer(), op.getMembars()});
     return success();
   }
+
+  mlir::ModuleOp& module_op_;
 };
 
 struct RewriteAsyncCopyWait : OpRewritePattern<gpu::AsyncCopyWaitOp> {
-  using OpRewritePattern::OpRewritePattern;
+  RewriteAsyncCopyWait(mlir::MLIRContext* context,
+                        mlir::ModuleOp& module_op)
+      : OpRewritePattern(context), module_op_(module_op) {}
 
   LogicalResult matchAndRewrite(
       gpu::AsyncCopyWaitOp op,
@@ -903,31 +961,36 @@ struct RewriteAsyncCopyWait : OpRewritePattern<gpu::AsyncCopyWaitOp> {
     auto read_offset = b.create<arith::MulIOp>(op.getOffset(), b.create<arith::ConstantIndexOp>(op.getOutElement().getType().getNumElements()));
     mlir::Value data_ptr = CreateGep(op.getBuffer(), read_offset, b);
     auto mbar_ptr = CreateGep(op.getMembars(), op.getOffset(), b);
+    
+    auto shared_ptr = ml::LLVMPointerType::get(b.getContext(), 3);
+    auto mbar_shared_ptr = b.create<ml::AddrSpaceCastOp>(shared_ptr, mbar_ptr).getResult();
 
     // Wait for the transaction to complete. The arrive instructions return a
     // token which we yield from the conditional; then we spin calling
     // mbarrier.try_wait.shared::cta.b64 in an scf.for loop until it returns 0.
     int64_t tx_size = TensorSizeBytes(op.getOutElement().getType());
-    Value tx_size_value = b.create<arith::ConstantIntOp>(b.getI64Type(), tx_size);
+    Value tx_size_value = b.create<arith::ConstantIntOp>(b.getI32Type(), tx_size);
+    auto arrive_func = GetMBarrierArriveFunc(rewriter, module_op_);
+    auto try_wait_func = GetMBarrierTryWaitFunc(rewriter, module_op_);
+    auto arrive_expect_tx_func = GetMBarrierArriveExpectTxFunc(rewriter, module_op_);
+
+    auto one = b.create<arith::ConstantIntOp>(b.getI32Type(), 1);
+
     auto arrive = b.create<scf::IfOp>(op.getIsLeader(),
                                       [&](OpBuilder& nested_b, Location nested_loc) {
                                         // Leader: arrive and wait for transaction to complete.
                                         mlir::ImplicitLocOpBuilder nb(nested_loc, nested_b);
-                                        auto arrive_leader = CreateInlineAsm(
-                                            nb, nested_loc, TypeRange{nb.getI64Type()},
-                                            ValueRange{mbar_ptr, tx_size_value},
-                                            "mbarrier.arrive.expect_tx.relaxed.cta.shared::cta.b64 $0, [$1], $2;",
-                                            "=l,l,r");
+                                        auto arrive_leader = nested_b.create<func::CallOp>(
+                                            nested_loc, arrive_expect_tx_func,
+                                            ValueRange{mbar_shared_ptr, tx_size_value});
                                         nb.create<scf::YieldOp>(ValueRange{arrive_leader.getResult(0)});
                                       },
                                       [&](OpBuilder& nested_b, Location nested_loc) {
                                         // Non-leader: just arrive.
                                         mlir::ImplicitLocOpBuilder nb(nested_loc, nested_b);
-                                        auto arrive_non_leader = CreateInlineAsm(
-                                            nb, nested_loc, TypeRange{nb.getI64Type()},
-                                            ValueRange{mbar_ptr},
-                                            "mbarrier.arrive.shared.b64 $0, [$1];",
-                                            "=l,l");
+                                        auto arrive_non_leader = nested_b.create<func::CallOp>(
+                                            nested_loc, arrive_func,
+                                            ValueRange{mbar_shared_ptr, one});
                                         nb.create<scf::YieldOp>(ValueRange{arrive_non_leader.getResult(0)});
                                       });
 
@@ -938,10 +1001,9 @@ struct RewriteAsyncCopyWait : OpRewritePattern<gpu::AsyncCopyWaitOp> {
     b.create<scf::WhileOp>(b.getLoc(), TypeRange{b.getI1Type()}, ValueRange{cont_init},
                            [&](OpBuilder& nested_b, Location nested_loc, ValueRange values) {
                              mlir::ImplicitLocOpBuilder nb(nested_loc, nested_b);
-                             auto try_wait = CreateInlineAsm(
-                               nb, nested_loc, TypeRange{nb.getI32Type()}, ValueRange{mbar_ptr, token},
-                               "mbarrier.try_wait.shared::cta.b64 $0, [$1], $2;",
-                               "=l,l,l");
+                             auto try_wait = nested_b.create<func::CallOp>(
+                                 nested_loc, try_wait_func,
+                                 ValueRange{mbar_shared_ptr, token});
                              Value status = try_wait.getResult(0);
                              Value cont = nb.create<arith::CmpIOp>(arith::CmpIPredicate::ne, status, nb.create<arith::ConstantIntOp>(nb.getI32Type(), 0));
                              nb.create<scf::ConditionOp>(cont, ValueRange{cont});
@@ -953,6 +1015,8 @@ struct RewriteAsyncCopyWait : OpRewritePattern<gpu::AsyncCopyWaitOp> {
     rewriter.replaceOp(op, ValueRange{data_ptr, op.getMembars()});
     return success();
   }
+
+  mlir::ModuleOp& module_op_;
 };
 
 struct RewriteNonScalarConstants : OpRewritePattern<mlir::arith::ConstantOp> {
@@ -1048,7 +1112,7 @@ Value CreateBitcast(mlir::ImplicitLocOpBuilder& b, mlir::Operation* op,
   Type llvm_input_ty = converter.convertType(value.getType());
   Type llvm_result_ty = converter.convertType(ty);
   Type ptr_ty = ml::LLVMPointerType::get(b.getContext());
-  auto func = op->getParentOfType<mlir::func::FuncOp>();
+  auto func = op->getParentOfType<func::FuncOp>();
   // AMDGPU backend needs allocas to be out of loops.
   // Move them to the entry block to be on the safe side.
   auto entry_builder = mlir::ImplicitLocOpBuilder::atBlockBegin(
@@ -1560,7 +1624,10 @@ class LowerTensorsPass : public impl::LowerTensorsPassBase<LowerTensorsPass> {
         .add<RewriteAllocateShared, RewriteNonScalarConstants,
              RewriteSyncThreads, RewriteTensorExtract, RewriteTransferRead,
              RewriteTensorInsert, RewriteTransferWrite, RewriteTensorExtractSlice,
-             RewriteAsyncCopyStart, RewriteAsyncCopyWait, RewriteInitMembars>(mlir_context);
+             RewriteInitMembars>(mlir_context);
+    mlir::ModuleOp module_op = getOperation();
+    tensor_patterns.add<RewriteAsyncCopyStart, RewriteAsyncCopyWait>(
+        mlir_context, module_op);
     if (mlir::failed(mlir::applyPatternsGreedily(getOperation(),
                                                  std::move(tensor_patterns)))) {
       signalPassFailure();
@@ -1597,7 +1664,7 @@ class LowerTensorsPass : public impl::LowerTensorsPassBase<LowerTensorsPass> {
         return;
       }
       if (auto base = mlir::dyn_cast<mlir::BlockArgument>(addr)) {
-        if (auto func = mlir::dyn_cast<mlir::func::FuncOp>(
+        if (auto func = mlir::dyn_cast<func::FuncOp>(
                 base.getOwner()->getParentOp())) {
           if (func.getArgAttr(base.getArgNumber(), "xla.invariant")) {
             load.setInvariant(true);

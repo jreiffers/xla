@@ -29,20 +29,22 @@ func.func @pipes(%is_lead: i1, %num_threads: i32, %a: tensor<1024xf32>) -> (tens
 //   %0 = llvm.mlir.addressof @shared_3 : !llvm.ptr<3>
 //   %1 = llvm.mlir.addressof @shared_2 : !llvm.ptr<3>
 //   %c128_i32 = arith.constant 128 : i32
-//   %c512_i64 = arith.constant 512 : i64
-//   %c0_i32 = arith.constant 0 : i32
+//   %c512_i32 = arith.constant 512 : i32
+//   %c0_i64 = arith.constant 0 : i64
+//   %false = arith.constant false
+//   %c1_i32 = arith.constant 1 : i32
 //   %true = arith.constant true
 //   %2 = llvm.addrspacecast %0 : !llvm.ptr<3> to !llvm.ptr
 //   %3 = llvm.addrspacecast %1 : !llvm.ptr<3> to !llvm.ptr
-//   scf.if %arg0 {
-//     %18 = llvm.getelementptr inbounds %3[0, 0] : (!llvm.ptr) -> !llvm.ptr, !llvm.array<4 x i64>
-//     nvvm.mbarrier.init %18, %c128_i32 : !llvm.ptr, i32
-//     %19 = llvm.getelementptr inbounds %3[0, 1] : (!llvm.ptr) -> !llvm.ptr, !llvm.array<4 x i64>
-//     nvvm.mbarrier.init %19, %c128_i32 : !llvm.ptr, i32
-//     %20 = llvm.getelementptr inbounds %3[0, 2] : (!llvm.ptr) -> !llvm.ptr, !llvm.array<4 x i64>
+//   scf.if %arg0 {                                                                                                                                                                   [116/1844]
+//     %20 = llvm.getelementptr inbounds %3[0, 0] : (!llvm.ptr) -> !llvm.ptr, !llvm.array<4 x i64>
 //     nvvm.mbarrier.init %20, %c128_i32 : !llvm.ptr, i32
-//     %21 = llvm.getelementptr inbounds %3[0, 3] : (!llvm.ptr) -> !llvm.ptr, !llvm.array<4 x i64>
+//     %21 = llvm.getelementptr inbounds %3[0, 1] : (!llvm.ptr) -> !llvm.ptr, !llvm.array<4 x i64>
 //     nvvm.mbarrier.init %21, %c128_i32 : !llvm.ptr, i32
+//     %22 = llvm.getelementptr inbounds %3[0, 2] : (!llvm.ptr) -> !llvm.ptr, !llvm.array<4 x i64>
+//     nvvm.mbarrier.init %22, %c128_i32 : !llvm.ptr, i32
+//     %23 = llvm.getelementptr inbounds %3[0, 3] : (!llvm.ptr) -> !llvm.ptr, !llvm.array<4 x i64>
+//     nvvm.mbarrier.init %23, %c128_i32 : !llvm.ptr, i32
 //   }
 //   gpu.barrier
 //   %4 = llvm.getelementptr inbounds %arg2[0, 0] : (!llvm.ptr) -> !llvm.ptr, !llvm.array<1024 x f32>
@@ -50,48 +52,52 @@ func.func @pipes(%is_lead: i1, %num_threads: i32, %a: tensor<1024xf32>) -> (tens
 //   %6 = llvm.getelementptr inbounds %2[0, 0] : (!llvm.ptr) -> !llvm.ptr, !llvm.array<512 x f32>
 //   %7 = llvm.getelementptr inbounds %3[0, 0] : (!llvm.ptr) -> !llvm.ptr, !llvm.array<4 x i64>
 //   scf.if %arg0 {
-//     llvm.inline_asm has_side_effects asm_dialect = att "cp.async.bulk.shared::cta.global.mbarrier::complete_tx::bytes [$0], [$1], 512, [$2];", "l,l,r,l" %6, %4, %7 : (!llvm.ptr, !llvm.ptr, !llvm.ptr) -> ()
+//     %20 = llvm.addrspacecast %7 : !llvm.ptr to !llvm.ptr<3>
+//     %21 = llvm.addrspacecast %6 : !llvm.ptr to !llvm.ptr<3>
+//     func.call @llvm.nvvm.cp.async.bulk.global.to.shared.cta(%21, %20, %4, %c512_i32, %c0_i64, %false) : (!llvm.ptr<3>, !llvm.ptr<3>, !llvm.ptr, i32, i64, i1) -> ()
 //   }
 //   %8 = llvm.getelementptr inbounds %2[0, 128] : (!llvm.ptr) -> !llvm.ptr, !llvm.array<512 x f32>
 //   %9 = llvm.getelementptr inbounds %3[0, 1] : (!llvm.ptr) -> !llvm.ptr, !llvm.array<4 x i64>
 //   scf.if %arg0 {
-//     llvm.inline_asm has_side_effects asm_dialect = att "cp.async.bulk.shared::cta.global.mbarrier::complete_tx::bytes [$0], [$1], 512, [$2];", "l,l,r,l" %8, %5, %9 : (!llvm.ptr, !llvm.ptr, !llvm.ptr) -> ()
+//     %20 = llvm.addrspacecast %9 : !llvm.ptr to !llvm.ptr<3>
+//     %21 = llvm.addrspacecast %8 : !llvm.ptr to !llvm.ptr<3>
+//     func.call @llvm.nvvm.cp.async.bulk.global.to.shared.cta(%21, %20, %5, %c512_i32, %c0_i64, %false) : (!llvm.ptr<3>, !llvm.ptr<3>, !llvm.ptr, i32, i64, i1) -> ()
 //   }
 //   %10 = llvm.getelementptr inbounds %2[0, 0] : (!llvm.ptr) -> !llvm.ptr, !llvm.array<512 x f32>
 //   %11 = llvm.getelementptr inbounds %3[0, 0] : (!llvm.ptr) -> !llvm.ptr, !llvm.array<4 x i64>
-//   %12 = scf.if %arg0 -> (i64) {
-//     %18 = llvm.inline_asm has_side_effects asm_dialect = att "mbarrier.arrive.expect_tx.relaxed.cta.shared::cta.b64 $0, [$1], $2;", "=l,l,r" %11, %c512_i64 : (!llvm.ptr, i64) -> i64
-//     scf.yield %18 : i64
+//   %12 = llvm.addrspacecast %11 : !llvm.ptr to !llvm.ptr<3>
+//   %13 = scf.if %arg0 -> (i64) {
+//     %20 = func.call @llvm.nvvm.mbarrier.arrive.expect.tx.relaxed.scope.cta.space.cta(%12, %c512_i32) : (!llvm.ptr<3>, i32) -> i64
+//     scf.yield %20 : i64
 //   } else {
-//     %18 = llvm.inline_asm has_side_effects asm_dialect = att "mbarrier.arrive.shared.b64 $0, [$1];", "=l,l" %11 : (!llvm.ptr) -> i64
-//     scf.yield %18 : i64
+//     %20 = func.call @llvm.nvvm.mbarrier.arrive.scope.cta.space.cta(%12, %c1_i32) : (!llvm.ptr<3>, i32) -> i64
+//     scf.yield %20 : i64
 //   }
-//   %13 = scf.while (%arg3 = %true) : (i1) -> i1 {
-//     %18 = llvm.inline_asm has_side_effects asm_dialect = att "mbarrier.try_wait.shared::cta.b64 $0, [$1], $2;", "=l,l,l" %11, %12 : (!llvm.ptr, i64) -> i32
-//     %19 = arith.cmpi ne, %18, %c0_i32 : i32
-//     scf.condition(%19) %19 : i1
+//   %14 = scf.while (%arg3 = %true) : (i1) -> i1 {
+//     %20 = func.call @llvm.nvvm.mbarrier.try.wait.scope.cta.space.cta(%12, %13) : (!llvm.ptr<3>, i64) -> i1
+//     scf.condition(%20) %20 : i1
 //   } do {
 //   ^bb0(%arg3: i1):
 //     scf.yield %arg3 : i1
 //   }
-//   %14 = llvm.getelementptr inbounds %2[0, 128] : (!llvm.ptr) -> !llvm.ptr, !llvm.array<512 x f32>
-//   %15 = llvm.getelementptr inbounds %3[0, 1] : (!llvm.ptr) -> !llvm.ptr, !llvm.array<4 x i64>
-//   %16 = scf.if %arg0 -> (i64) {
-//     %18 = llvm.inline_asm has_side_effects asm_dialect = att "mbarrier.arrive.expect_tx.relaxed.cta.shared::cta.b64 $0, [$1], $2;", "=l,l,r" %15, %c512_i64 : (!llvm.ptr, i64) -> i64
-//     scf.yield %18 : i64
+//   %15 = llvm.getelementptr inbounds %2[0, 128] : (!llvm.ptr) -> !llvm.ptr, !llvm.array<512 x f32>
+//   %16 = llvm.getelementptr inbounds %3[0, 1] : (!llvm.ptr) -> !llvm.ptr, !llvm.array<4 x i64>
+//   %17 = llvm.addrspacecast %16 : !llvm.ptr to !llvm.ptr<3>
+//   %18 = scf.if %arg0 -> (i64) {
+//     %20 = func.call @llvm.nvvm.mbarrier.arrive.expect.tx.relaxed.scope.cta.space.cta(%17, %c512_i32) : (!llvm.ptr<3>, i32) -> i64
+//     scf.yield %20 : i64
 //   } else {
-//     %18 = llvm.inline_asm has_side_effects asm_dialect = att "mbarrier.arrive.shared.b64 $0, [$1];", "=l,l" %15 : (!llvm.ptr) -> i64
-//     scf.yield %18 : i64
+//     %20 = func.call @llvm.nvvm.mbarrier.arrive.scope.cta.space.cta(%17, %c1_i32) : (!llvm.ptr<3>, i32) -> i64
+//     scf.yield %20 : i64
 //   }
-//   %17 = scf.while (%arg3 = %true) : (i1) -> i1 {
-//     %18 = llvm.inline_asm has_side_effects asm_dialect = att "mbarrier.try_wait.shared::cta.b64 $0, [$1], $2;", "=l,l,l" %15, %16 : (!llvm.ptr, i64) -> i32
-//     %19 = arith.cmpi ne, %18, %c0_i32 : i32
-//     scf.condition(%19) %19 : i1
+//   %19 = scf.while (%arg3 = %true) : (i1) -> i1 {
+//     %20 = func.call @llvm.nvvm.mbarrier.try.wait.scope.cta.space.cta(%17, %18) : (!llvm.ptr<3>, i64) -> i1
+//     scf.condition(%20) %20 : i1
 //   } do {
 //   ^bb0(%arg3: i1):
 //     scf.yield %arg3 : i1
 //   }
-//   "dummy.consume"(%10, %14) : (!llvm.ptr, !llvm.ptr) -> ()
+//   "dummy.consume"(%10, %15) : (!llvm.ptr, !llvm.ptr) -> ()
 //   return
 // }
 
@@ -162,8 +168,10 @@ func.func @pipe_loop2(%is_lead: i1, %num_threads: i32, %a: tensor<10x128xf32>) -
 //   %c0 = arith.constant 0 : index
 //   %1 = llvm.mlir.addressof @shared_0 : !llvm.ptr<3>
 //   %c128_i32 = arith.constant 128 : i32
-//   %c512_i64 = arith.constant 512 : i64
-//   %c0_i32 = arith.constant 0 : i32
+//   %c512_i32 = arith.constant 512 : i32
+//   %c0_i64 = arith.constant 0 : i64
+//   %false = arith.constant false
+//   %c1_i32 = arith.constant 1 : i32
 //   %true = arith.constant true
 //   %2 = llvm.addrspacecast %0 : !llvm.ptr<3> to !llvm.ptr
 //   %3 = llvm.addrspacecast %1 : !llvm.ptr<3> to !llvm.ptr
@@ -174,17 +182,21 @@ func.func @pipe_loop2(%is_lead: i1, %num_threads: i32, %a: tensor<10x128xf32>) -
 //     nvvm.mbarrier.init %12, %c128_i32 : !llvm.ptr, i32
 //   }
 //   gpu.barrier
-//   %4 = llvm.getelementptr inbounds %arg2[0, 0] : (!llvm.ptr) -> !llvm.ptr, !llvm.array<1280 x f32>
+//   %4 = llvm.getelementptr inbounds %arg2[0, 0] : (!llvm.ptr) -> !llvm.ptr, !llvm.array<1280 x f32>                                                                                  [27/1844]
 //   %5 = llvm.getelementptr inbounds %arg2[0, 128] : (!llvm.ptr) -> !llvm.ptr, !llvm.array<1280 x f32>
 //   %6 = llvm.getelementptr inbounds %2[0, 0] : (!llvm.ptr) -> !llvm.ptr, !llvm.array<256 x f32>
 //   %7 = llvm.getelementptr inbounds %3[0, 0] : (!llvm.ptr) -> !llvm.ptr, !llvm.array<2 x i64>
 //   scf.if %arg0 {
-//     llvm.inline_asm has_side_effects asm_dialect = att "cp.async.bulk.shared::cta.global.mbarrier::complete_tx::bytes [$0], [$1], 512, [$2];", "l,l,r,l" %6, %4, %7 : (!llvm.ptr, !llvm.ptr, !llvm.ptr) -> ()
+//     %11 = llvm.addrspacecast %7 : !llvm.ptr to !llvm.ptr<3>
+//     %12 = llvm.addrspacecast %6 : !llvm.ptr to !llvm.ptr<3>
+//     func.call @llvm.nvvm.cp.async.bulk.global.to.shared.cta(%12, %11, %4, %c512_i32, %c0_i64, %false) : (!llvm.ptr<3>, !llvm.ptr<3>, !llvm.ptr, i32, i64, i1) -> ()
 //   }
 //   %8 = llvm.getelementptr inbounds %2[0, 128] : (!llvm.ptr) -> !llvm.ptr, !llvm.array<256 x f32>
 //   %9 = llvm.getelementptr inbounds %3[0, 1] : (!llvm.ptr) -> !llvm.ptr, !llvm.array<2 x i64>
 //   scf.if %arg0 {
-//     llvm.inline_asm has_side_effects asm_dialect = att "cp.async.bulk.shared::cta.global.mbarrier::complete_tx::bytes [$0], [$1], 512, [$2];", "l,l,r,l" %8, %5, %9 : (!llvm.ptr, !llvm.ptr, !llvm.ptr) -> ()
+//     %11 = llvm.addrspacecast %9 : !llvm.ptr to !llvm.ptr<3>
+//     %12 = llvm.addrspacecast %8 : !llvm.ptr to !llvm.ptr<3>
+//     func.call @llvm.nvvm.cp.async.bulk.global.to.shared.cta(%12, %11, %5, %c512_i32, %c0_i64, %false) : (!llvm.ptr<3>, !llvm.ptr<3>, !llvm.ptr, i32, i64, i1) -> ()
 //   }
 //   %10:2 = scf.for %arg3 = %c0 to %c10 step %c1 iter_args(%arg4 = %c0, %arg5 = %cst) -> (index, f32) {
 //     %11 = arith.addi %arg4, %c1 : index
@@ -194,45 +206,46 @@ func.func @pipe_loop2(%is_lead: i1, %num_threads: i32, %a: tensor<10x128xf32>) -
 //     %15 = llvm.getelementptr inbounds %2[0, %14] : (!llvm.ptr, i64) -> !llvm.ptr, !llvm.array<256 x f32>
 //     %16 = arith.index_castui %arg4 : index to i64
 //     %17 = llvm.getelementptr inbounds %3[0, %16] : (!llvm.ptr, i64) -> !llvm.ptr, !llvm.array<2 x i64>
-//     %18 = scf.if %arg0 -> (i64) {
-//       %26 = llvm.inline_asm has_side_effects asm_dialect = att "mbarrier.arrive.expect_tx.relaxed.cta.shared::cta.b64 $0, [$1], $2;", "=l,l,r" %17, %c512_i64 : (!llvm.ptr, i64) -> i64
-//       scf.yield %26 : i64
+//     %18 = llvm.addrspacecast %17 : !llvm.ptr to !llvm.ptr<3>
+//     %19 = scf.if %arg0 -> (i64) {
+//       %27 = func.call @llvm.nvvm.mbarrier.arrive.expect.tx.relaxed.scope.cta.space.cta(%18, %c512_i32) : (!llvm.ptr<3>, i32) -> i64
+//       scf.yield %27 : i64
 //     } else {
-//       %26 = llvm.inline_asm has_side_effects asm_dialect = att "mbarrier.arrive.shared.b64 $0, [$1];", "=l,l" %17 : (!llvm.ptr) -> i64
-//       scf.yield %26 : i64
+//       %27 = func.call @llvm.nvvm.mbarrier.arrive.scope.cta.space.cta(%18, %c1_i32) : (!llvm.ptr<3>, i32) -> i64
+//       scf.yield %27 : i64
 //     }
-//     %19 = scf.while (%arg6 = %true) : (i1) -> i1 {
-//       %26 = llvm.inline_asm has_side_effects asm_dialect = att "mbarrier.try_wait.shared::cta.b64 $0, [$1], $2;", "=l,l,l" %17, %18 : (!llvm.ptr, i64) -> i32
-//       %27 = arith.cmpi ne, %26, %c0_i32 : i32
+//     %20 = scf.while (%arg6 = %true) : (i1) -> i1 {
+//       %27 = func.call @llvm.nvvm.mbarrier.try.wait.scope.cta.space.cta(%18, %19) : (!llvm.ptr<3>, i64) -> i1
 //       scf.condition(%27) %27 : i1
 //     } do {
 //     ^bb0(%arg6: i1):
 //       scf.yield %arg6 : i1
 //     }
-//     %20 = llvm.getelementptr inbounds %15[0, 0] : (!llvm.ptr) -> !llvm.ptr, !llvm.array<128 x f32>
-//     %21 = llvm.load %20 : !llvm.ptr -> f32
-//     %22 = arith.addf %arg5, %21 : f32
-//     %23 = arith.addi %arg3, %c2 : index
-//     %24 = arith.muli %23, %c128 : index
-//     %25 = arith.cmpi sge, %arg3, %c8 : index
-//     scf.if %25 {
+//     %21 = llvm.getelementptr inbounds %15[0, 0] : (!llvm.ptr) -> !llvm.ptr, !llvm.array<128 x f32>
+//     %22 = llvm.load %21 : !llvm.ptr -> f32
+//     %23 = arith.addf %arg5, %22 : f32
+//     %24 = arith.addi %arg3, %c2 : index
+//     %25 = arith.muli %24, %c128 : index
+//     %26 = arith.cmpi sge, %arg3, %c8 : index
+//     scf.if %26 {
 //     } else {
-//       %26 = xla.apply_indexing #indexing_map(%24)
-//       %27 = arith.index_castui %26 : index to i64
-//       %28 = llvm.getelementptr inbounds %arg2[0, %27] : (!llvm.ptr, i64) -> !llvm.ptr, !llvm.array<1280 x f32>
-//       %29 = arith.addi %12, %c1 : index
-//       %30 = arith.remui %29, %c2 : index
-//       %31 = arith.muli %30, %c128 : index
-//       %32 = arith.index_castui %31 : index to i64
-//       %33 = llvm.getelementptr inbounds %2[0, %32] : (!llvm.ptr, i64) -> !llvm.ptr, !llvm.array<256 x f32>
-//       %34 = arith.index_castui %30 : index to i64
-//       %35 = llvm.getelementptr inbounds %3[0, %34] : (!llvm.ptr, i64) -> !llvm.ptr, !llvm.array<2 x i64>
+//       %27 = xla.apply_indexing #indexing_map(%25)
+//       %28 = arith.index_castui %27 : index to i64
+//       %29 = llvm.getelementptr inbounds %arg2[0, %28] : (!llvm.ptr, i64) -> !llvm.ptr, !llvm.array<1280 x f32>
+//       %30 = arith.addi %12, %c1 : index
+//       %31 = arith.remui %30, %c2 : index
+//       %32 = arith.muli %31, %c128 : index
+//       %33 = arith.index_castui %32 : index to i64
+//       %34 = llvm.getelementptr inbounds %2[0, %33] : (!llvm.ptr, i64) -> !llvm.ptr, !llvm.array<256 x f32>
+//       %35 = arith.index_castui %31 : index to i64
+//       %36 = llvm.getelementptr inbounds %3[0, %35] : (!llvm.ptr, i64) -> !llvm.ptr, !llvm.array<2 x i64>
 //       scf.if %arg0 {
-//         llvm.inline_asm has_side_effects asm_dialect = att "cp.async.bulk.shared::cta.global.mbarrier::complete_tx::bytes [$0], [$1], 512, [$2];", "l,l,r,l" %33, %28, %35 : (!llvm.ptr, !llvm.ptr, !llvm.ptr) -> ()
+//         %37 = llvm.addrspacecast %36 : !llvm.ptr to !llvm.ptr<3>
+//         %38 = llvm.addrspacecast %34 : !llvm.ptr to !llvm.ptr<3>
+//         func.call @llvm.nvvm.cp.async.bulk.global.to.shared.cta(%38, %37, %29, %c512_i32, %c0_i64, %false) : (!llvm.ptr<3>, !llvm.ptr<3>, !llvm.ptr, i32, i64, i1) -> ()
 //       }
 //     }
-//     scf.yield %12, %22 : index, f32
+//     scf.yield %12, %23 : index, f32
 //   }
 //   return %10#1 : f32
 // }
-
