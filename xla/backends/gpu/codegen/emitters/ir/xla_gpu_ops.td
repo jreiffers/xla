@@ -195,8 +195,7 @@ def XLAGPU_ReduceOp : XLAGPU_Op<"reduce", [
   let hasVerifier = 1;
 }
 
-def XLAGPU_AllocatePipeOp : XLAGPU_Op<"allocate_pipe", [
-    Pure]> {
+def XLAGPU_AllocatePipeOp : XLAGPU_Op<"allocate_pipe", []> {
   let summary = "Allocates a shared memory pipe";
   let description = [{
   }];
