@@ -807,7 +807,7 @@ ml::GlobalOp CreateGlobalOp(mlir::Attribute value,
   b.setInsertionPointToStart(module.getBody());
   return b.create<ml::GlobalOp>(array_ty, is_constant,
                                 /*linkage=*/ml::Linkage::Private, name, value,
-                                /*alignment=*/0, addr_space);
+                                /*alignment=*/16 /* TODO: might not do anything */, addr_space);
 }
 
 struct RewriteAllocateShared : OpRewritePattern<gpu::AllocateSharedOp> {
@@ -867,7 +867,9 @@ struct RewriteInitMembars : OpRewritePattern<gpu::InitMembarsOp> {
     
     for (int i = 0; i < n_membars; ++i) {
       auto mbar = CreateGep(op.getMembars(), b.create<arith::ConstantIndexOp>(i), b);
-      b.create<mlir::NVVM::MBarrierInitOp>(/*addr=*/mbar, /*count=*/n_threads, /*predicate=*/mlir::Value());
+      auto mbar_shared = b.create<ml::AddrSpaceCastOp>(
+          ml::LLVMPointerType::get(b.getContext(), 3), mbar).getResult();
+      b.create<mlir::NVVM::MBarrierInitOp>(/*addr=*/mbar_shared, /*count=*/n_threads, /*predicate=*/mlir::Value());
     }
     b.create<scf::YieldOp>();
 
@@ -984,7 +986,7 @@ struct RewriteAsyncCopyWait : OpRewritePattern<gpu::AsyncCopyWaitOp> {
                                  nested_loc, try_wait_func,
                                  ValueRange{mbar_shared_ptr, token});
                              Value status = try_wait.getResult(0);
-                             Value cont = nb.create<arith::CmpIOp>(arith::CmpIPredicate::ne, status, nb.create<arith::ConstantIntOp>(nb.getI32Type(), 0));
+                             Value cont = nb.create<arith::CmpIOp>(arith::CmpIPredicate::eq, status, nb.create<arith::ConstantIntOp>(nb.getI1Type(), 0));
                              nb.create<scf::ConditionOp>(cont, ValueRange{cont});
                            },
                            [&](OpBuilder& nested_b, Location nested_loc, ValueRange values) {
