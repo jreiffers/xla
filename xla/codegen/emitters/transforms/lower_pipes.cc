@@ -331,15 +331,14 @@ struct ConvertEnqueue : public mlir::OpConversionPattern<gpu::EnqueueOp> {
     // Compute the write index from the read index and the level.
     Value write_index = b.create<arith::RemUIOp>(
         b.create<arith::AddIOp>(read_index, level), capacity);
+    auto copy_start = b.create<gpu::AsyncCopyStartOp>(
+        mlir::TypeRange(buffers), membars.getType(), op.getSources(), buffers,
+        membars, write_index, leader);
+  
+    SmallVector<Value> result{copy_start.getOutMembars(), read_index, leader};
+    result.append(copy_start.getOutBuffers().begin(),
+                  copy_start.getOutBuffers().end());
 
-    ValueRange out =
-        b.create<gpu::AsyncCopyStartOp>(mlir::TypeRange(buffers),
-                                        membars.getType(), op.getSources(),
-                                        buffers, membars, write_index, leader)
-            .getResults();
-    SmallVector<Value> result{out.back(), read_index, leader};
-    auto out_tensors = out.drop_back(1);
-    result.append(out_tensors.begin(), out_tensors.end());
     rewriter.replaceOpWithMultiple(op, {result});
     return success();
   }
@@ -363,14 +362,19 @@ struct ConvertDequeue : public mlir::OpConversionPattern<gpu::DequeueOp> {
         b.create<arith::ConstantIndexOp>(op.getPipe().getType().getCapacity());
     Value next_read_index = b.create<arith::RemUIOp>(
         b.create<arith::AddIOp>(read_index, one), capacity);
+    auto copy_wait = b.create<gpu::AsyncCopyWaitOp>(
+        mlir::TypeRange(op.getTensors()), membars.getType(), buffers, membars,
+        read_index, leader);
 
-    ValueRange out = b.create<gpu::AsyncCopyWaitOp>(
-                          mlir::TypeRange(op.getTensors()), membars.getType(),
-                          buffers, membars, read_index, leader)
-                         .getResults();
-    SmallVector<Value> result_pipe{out.back(), next_read_index, leader};
+    SmallVector<SmallVector<Value>> results;
+    for (auto out : copy_wait.getOutElements()) {
+      results.push_back({out});
+    }
+    SmallVector<Value>& result_pipe = results.emplace_back();
+    result_pipe = {copy_wait.getOutMembars(), next_read_index, leader};
     result_pipe.append(buffers.begin(), buffers.end());
-    rewriter.replaceOpWithMultiple(op, {buffers, result_pipe});
+
+    rewriter.replaceOpWithMultiple(op, results);
     return success();
   }
 };

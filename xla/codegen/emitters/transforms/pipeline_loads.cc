@@ -40,10 +40,12 @@ namespace {
 #define GEN_PASS_DEF_PIPELINELOADS
 #include "xla/codegen/emitters/transforms/passes.h.inc"
 
+using ::llvm::SmallVector;
 using ::mlir::AffineExpr;
 using ::mlir::ImplicitLocOpBuilder;
 using ::mlir::OpFoldResult;
 using ::mlir::Value;
+using ::mlir::ValueRange;
 
 namespace scf = ::mlir::scf;
 namespace arith = ::mlir::arith;
@@ -95,18 +97,19 @@ struct PipelinedLoadInfo {
   IndexingMap base_indexing_map;
 
   int transaction_size;
+  mlir::RankedTensorType transaction_type;
   int64_t outer_loop_dim;
 
   Value thread_idx_value;
   int64_t thread_id_dim;
   int64_t thread_id_stride;
-  llvm::SmallVector<int64_t> loop_var_dims;
-  llvm::SmallVector<int64_t> loop_strides;
+  SmallVector<int64_t> loop_var_dims;
+  SmallVector<int64_t> loop_strides;
 };
 
 std::optional<PipelinedLoadInfo> GetLoadInfo(
     mlir::tensor::ExtractOp load, scf::ForOp outer_loop,
-    llvm::SmallVector<scf::ForOp>& loop_nest) {
+    SmallVector<scf::ForOp>& loop_nest) {
   if (load.getIndices().size() != 1) {
     return std::nullopt;
   }
@@ -190,6 +193,8 @@ std::optional<PipelinedLoadInfo> GetLoadInfo(
   }
 
   info.transaction_size = *transaction_size;
+  info.transaction_type = info.load_op.getTensor().getType().clone(
+      SmallVector<int64_t>{info.transaction_size});
 
   // Verify the non-loop dimensions are constant within outer_loop.
   for (int i = 0; i < apply_indexing.getNumOperands(); ++i) {
@@ -211,95 +216,112 @@ std::optional<PipelinedLoadInfo> GetLoadInfo(
   return info;
 }
 
-struct PipelineTensorExtract : mlir::OpRewritePattern<mlir::tensor::ExtractOp> {
+// TODO: Using OpRewritePattern here doesn't make a lot of sense.
+struct PipelineTensorExtracts : mlir::OpRewritePattern<scf::ForOp> {
   using OpRewritePattern::OpRewritePattern;
 
   // TODO: yikes. Refactor this into something understandable.
   mlir::LogicalResult matchAndRewrite(
-      mlir::tensor::ExtractOp op,
-      mlir::PatternRewriter& rewriter) const override {
-    if (mlir::isa_and_present<gpu::DequeueOp>(op.getTensor().getDefiningOp())) {
-      return rewriter.notifyMatchFailure(op, "already pipelined");
-    }
+      scf::ForOp inner_loop, mlir::PatternRewriter& rewriter) const override {
+    scf::ForOp loop = inner_loop;
 
-    auto loop = mlir::dyn_cast_or_null<scf::ForOp>(op->getParentOp());
-    if (!loop) {
-      std::cerr << "not pipelineable\n";
-      return rewriter.notifyMatchFailure(op, "not a pipelineable load");
-    }
-    llvm::SmallVector<scf::ForOp> loop_nest;  // inner to outer.
+    SmallVector<scf::ForOp> loop_nest;  // inner to outer.
     while (loop) {
       loop_nest.push_back(loop);
       loop = mlir::dyn_cast_or_null<scf::ForOp>(loop->getParentOp());
     }
-
     // TODO: Hmm.
     loop = loop_nest.back();
     loop_nest.pop_back();
 
+    SmallVector<PipelinedLoadInfo, 1> pipelineable_loads;
+    for (auto& op : inner_loop.getBody()->getOperations()) {
+      if (auto load = mlir::dyn_cast<mlir::tensor::ExtractOp>(op)) {
+        if (mlir::isa_and_present<gpu::DequeueOp>(
+                load.getTensor().getDefiningOp())) {
+          // If one is pipelined, all will be.
+          return rewriter.notifyMatchFailure(inner_loop, "already pipelined");
+        }
+        auto maybe_info = GetLoadInfo(load, loop, loop_nest);
+        if (maybe_info) {
+          pipelineable_loads.push_back(*std::move(maybe_info));
+        }
+      }
+    }
+
+    if (pipelineable_loads.empty()) {
+      return rewriter.notifyMatchFailure(inner_loop, "no pipelineable loads");
+    }
+
     auto trip_count = GetTripCount(loop);
     if (!trip_count || trip_count < 2) {
       return rewriter.notifyMatchFailure(
-          op, "loop trip count unknown or too small");
+          inner_loop, "loop trip count unknown or too small");
     }
 
-    auto maybe_info = GetLoadInfo(op, loop, loop_nest);
-    if (!maybe_info) {
-      return rewriter.notifyMatchFailure(op, "not a pipelineable load");
-    }
-    auto& info = *maybe_info;
-
-    ImplicitLocOpBuilder b(op.getLoc(), rewriter);
+    ImplicitLocOpBuilder b(loop.getLoc(), rewriter);
     b.setInsertionPoint(loop);
-    auto zero = b.create<arith::ConstantIndexOp>(0);
-    auto one = b.create<arith::ConstantIndexOp>(1);
+    Value zero = b.create<arith::ConstantIndexOp>(0);
+    Value one = b.create<arith::ConstantIndexOp>(1);
+    Value is_leader = b.create<arith::CmpIOp>(
+        arith::CmpIPredicate::eq, pipelineable_loads[0].thread_idx_value, zero);
 
-    Value is_leader = b.create<arith::CmpIOp>(arith::CmpIPredicate::eq,
-                                              info.thread_idx_value, zero);
-    auto tx_ty = op.getTensor().getType().clone(
-        llvm::SmallVector<int64_t>{info.transaction_size});
+    SmallVector<mlir::RankedTensorType> tx_types;
+    for (auto& info : pipelineable_loads) {
+      tx_types.push_back(info.transaction_type);
+    }
+
     auto empty_pipe_ty =
-        gpu::SharedMemoryPipeType::get(b.getContext(), tx_ty,
+        gpu::SharedMemoryPipeType::get(b.getContext(), tx_types,
                                        /*capacity=*/2,  // TODO: always 2?
                                        /*level=*/0);
     Value pipe = b.create<gpu::AllocatePipeOp>(empty_pipe_ty, is_leader,
                                                128 /* TODO: get from domain */);
 
+    auto get_slices = [&pipelineable_loads, zero](mlir::OpBuilder& builder,
+                                                  Value index) {
+      SmallVector<Value> slices;
+      for (auto& info : pipelineable_loads) {
+        SmallVector<Value> new_operands(info.apply_indexing.getOperands());
+        new_operands[info.thread_id_dim] = zero;
+        for (int64_t dim : info.loop_var_dims) {
+          new_operands[dim] = zero;
+        }
+        new_operands[info.outer_loop_dim] = index;
+        Value base_index =
+            builder
+                .create<ApplyIndexingOp>(info.load_op.getLoc(), new_operands,
+                                         info.base_indexing_map)
+                .getResult(0);
+        SmallVector<OpFoldResult> offsets{base_index};
+        SmallVector<OpFoldResult> sizes{
+            builder.getIndexAttr(info.transaction_size)};
+        SmallVector<OpFoldResult> strides{builder.getIndexAttr(1)};
+        slices.push_back(builder.create<mlir::tensor::ExtractSliceOp>(
+            info.load_op.getLoc(), info.transaction_type,
+            info.load_op.getTensor(), offsets, sizes, strides));
+      }
+      return slices;
+    };
+
     // Prime the pipeline.
-    llvm::SmallVector<mlir::Value> new_operands(
-        info.apply_indexing.getOperands());
-    new_operands[info.thread_id_dim] = zero;
-    for (int64_t dim : info.loop_var_dims) {
-      new_operands[dim] = zero;
-    }
     for (auto idx : {zero, one}) {
-      new_operands[info.outer_loop_dim] = idx;
-      Value base_index =
-          b.create<ApplyIndexingOp>(new_operands, info.base_indexing_map)
-              .getResult(0);
-      llvm::SmallVector<OpFoldResult> offsets{base_index};
-      llvm::SmallVector<OpFoldResult> sizes{
-          b.getIndexAttr(info.transaction_size)};
-      llvm::SmallVector<OpFoldResult> strides{b.getIndexAttr(1)};
-      auto slice = b.create<mlir::tensor::ExtractSliceOp>(
-          tx_ty, op.getTensor(), offsets, sizes, strides);
-      pipe = b.create<gpu::EnqueueOp>(pipe, mlir::ValueRange(slice));
+      pipe = b.create<gpu::EnqueueOp>(pipe, get_slices(b, idx));
     }
 
-    Value dequeued;
+    ValueRange dequeued;
     (void)loop.replaceWithAdditionalYields(
         rewriter, pipe,
         /*replaceInitOperandUsesInLoop=*/false,
         [&](mlir::OpBuilder& yield_b, mlir::Location yield_loc,
-            llvm::ArrayRef<mlir::BlockArgument> bbarg)
-            -> llvm::SmallVector<Value> {
+            llvm::ArrayRef<mlir::BlockArgument> bbarg) -> SmallVector<Value> {
           mlir::ImplicitLocOpBuilder dequeue_builder(yield_loc, yield_b);
           dequeue_builder.setInsertionPointToStart(loop.getBody());
           Value orig_pipe = bbarg[0];
-          auto value_and_pipe =
+          ValueRange values_and_pipe =
               dequeue_builder.create<gpu::DequeueOp>(orig_pipe).getResults();
-          dequeued = value_and_pipe[0];
-          Value pipe = value_and_pipe[1];
+          dequeued = values_and_pipe.drop_back(1);
+          Value pipe = values_and_pipe.back();
 
           auto induction_var =
               mlir::cast<scf::ForOp>(bbarg[0].getOwner()->getParentOp())
@@ -314,20 +336,10 @@ struct PipelineTensorExtract : mlir::OpRewritePattern<mlir::tensor::ExtractOp> {
               yield_loc, cond,
               /*thenBuilder=*/
               [&](mlir::OpBuilder& then_b, mlir::Location then_loc) {
-                new_operands[info.outer_loop_dim] = induction_var_plus_two;
-                Value base_index =
-                    then_b
-                        .create<ApplyIndexingOp>(then_loc, new_operands,
-                                                 info.base_indexing_map)
-                        .getResult(0);
-                llvm::SmallVector<OpFoldResult> offsets{base_index};
-                llvm::SmallVector<OpFoldResult> sizes{
-                    then_b.getIndexAttr(info.transaction_size)};
-                llvm::SmallVector<OpFoldResult> strides{then_b.getIndexAttr(1)};
-                auto slice = then_b.create<mlir::tensor::ExtractSliceOp>(
-                    then_loc, tx_ty, op.getTensor(), offsets, sizes, strides);
-                Value new_pipe = then_b.create<gpu::EnqueueOp>(
-                    then_loc, pipe, mlir::ValueRange(slice));
+                SmallVector<Value> slices =
+                    get_slices(then_b, induction_var_plus_two);
+                Value new_pipe =
+                    then_b.create<gpu::EnqueueOp>(then_loc, pipe, slices);
                 then_b.create<scf::YieldOp>(then_loc, new_pipe);
               },
               /*elseBuilder=*/
@@ -340,35 +352,40 @@ struct PipelineTensorExtract : mlir::OpRewritePattern<mlir::tensor::ExtractOp> {
           return {enqueue.getResult(0)};
         });
 
-    rewriter.setInsertionPoint(op);
+    for (int i = 0; i < pipelineable_loads.size(); ++i) {
+      const auto& info = pipelineable_loads[i];
+      const auto& buffer = dequeued[i];
 
-    llvm::SmallVector<Value> load_operands(
-        info.base_indexing_map.GetDimVarsCount(), zero);
-    load_operands[info.thread_id_dim] = info.thread_idx_value;
+      rewriter.setInsertionPoint(info.load_op);
+      SmallVector<Value> load_operands(info.base_indexing_map.GetDimVarsCount(),
+                                       zero);
+      load_operands[info.thread_id_dim] = info.thread_idx_value;
 
-    AffineExpr load_offset =
-        mlir::getAffineDimExpr(info.thread_id_dim, op.getContext()) *
-        info.thread_id_stride;
-    for (int i = 0; i < loop_nest.size(); ++i) {
-      int64_t stride = info.loop_strides[i];
-      int64_t dim = info.loop_var_dims[i];
-      AffineExpr loop_var_expr = mlir::getAffineDimExpr(dim, op.getContext());
-      load_offset = load_offset + loop_var_expr * stride;
-      load_operands[dim] = loop_nest[i].getInductionVar();
+      AffineExpr load_offset =
+          mlir::getAffineDimExpr(info.thread_id_dim, loop.getContext()) *
+          info.thread_id_stride;
+      for (int i = 0; i < loop_nest.size(); ++i) {
+        int64_t stride = info.loop_strides[i];
+        int64_t dim = info.loop_var_dims[i];
+        AffineExpr loop_var_expr =
+            mlir::getAffineDimExpr(dim, loop.getContext());
+        load_offset = load_offset + loop_var_expr * stride;
+        load_operands[dim] = loop_nest[i].getInductionVar();
+      }
+      mlir::AffineMap load_affine_map = mlir::AffineMap::get(
+          info.base_indexing_map.GetDimVarsCount(), 0, load_offset);
+      IndexingMap load_indexing_map(
+          load_affine_map, info.base_indexing_map.GetDimVars(), {}, {});
+
+      Value new_load_index =
+          rewriter
+              .create<ApplyIndexingOp>(loop.getLoc(), load_operands,
+                                       load_indexing_map)
+              .getResult(0);
+      rewriter.replaceOpWithNewOp<mlir::tensor::ExtractOp>(info.load_op, buffer,
+                                                           new_load_index);
     }
-    mlir::AffineMap load_affine_map = mlir::AffineMap::get(
-        info.base_indexing_map.GetDimVarsCount(), 0, load_offset);
-    IndexingMap load_indexing_map(load_affine_map,
-                                  info.base_indexing_map.GetDimVars(), {}, {});
 
-    Value new_load_index =
-        rewriter
-            .create<ApplyIndexingOp>(op.getLoc(), load_operands,
-                                     load_indexing_map)
-            .getResult(0);
-    rewriter.replaceOpWithNewOp<mlir::tensor::ExtractOp>(op, dequeued,
-                                                         new_load_index);
-    llvm::errs() << *pipe.getDefiningOp()->getParentRegion()->begin() << "\n";
     return llvm::success();
   }
 };
@@ -379,7 +396,7 @@ class PipelineLoadsPass : public impl::PipelineLoadsBase<PipelineLoadsPass> {
     mlir::func::FuncOp func = getOperation();
     mlir::MLIRContext* mlir_context = &getContext();
     mlir::RewritePatternSet patterns(mlir_context);
-    patterns.add<PipelineTensorExtract>(mlir_context);
+    patterns.add<PipelineTensorExtracts>(mlir_context);
 
     if (mlir::failed(mlir::applyPatternsGreedily(func, std::move(patterns)))) {
       signalPassFailure();

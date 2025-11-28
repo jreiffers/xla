@@ -63,7 +63,7 @@ def XLAGPU_SharedMemoryPipeType : XLAGPU_Type<"SharedMemoryPipe", "shmem_pipe"> 
     }
   }];
 
-  let assemblyFormat = "`<` $capacity `*` $elementTypes `,` $level `>`";
+  let assemblyFormat = "`<` $capacity `*` `(` $elementTypes `)` `,` $level `>`";
 }
 
 #endif // XLA_BACKENDS_GPU_CODEGEN_EMITTERS_IR_XLA_GPU_TYPES_TD
