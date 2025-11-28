@@ -217,13 +217,13 @@ def XLAGPU_EnqueueOp : XLAGPU_Op<"enqueue", [
   }];
   let arguments = (ins
     XLAGPU_SharedMemoryPipeType:$pipe,
-    AnyRankedTensor:$source);
+    Variadic<AnyRankedTensor>:$sources);
   let results = (outs XLAGPU_SharedMemoryPipeType:$out_pipe);
 
   let extraClassDeclaration = [{
   }];
   let hasVerifier = 1;
-  let assemblyFormat = "$source `into` $pipe attr-dict `:` type($source) `into` type($pipe)";
+  let assemblyFormat = "$sources `into` $pipe attr-dict `:` type($sources) `into` type($pipe)";
 }
 
 def XLAGPU_EnqueueUndefOp : XLAGPU_Op<"enqueue_undef", [
@@ -236,11 +236,13 @@ def XLAGPU_EnqueueUndefOp : XLAGPU_Op<"enqueue_undef", [
 }
 
 def XLAGPU_DequeueOp : XLAGPU_Op<"dequeue", [Pure, DeclareOpInterfaceMethods<InferTypeOpInterface>]> {
-  let summary = "Dequeues a tensor from a queue.";
+  let summary = "Dequeues tensors from a queue.";
 
   let arguments = (ins
     XLAGPU_SharedMemoryPipeType:$pipe);
-  let results = (outs AnyRankedTensor:$tensor, XLAGPU_SharedMemoryPipeType:$out_pipe);
+  let results = (outs
+    Variadic<AnyRankedTensor>:$tensors,
+    XLAGPU_SharedMemoryPipeType:$out_pipe);
 
   let hasCustomAssemblyFormat = 1;
   let hasVerifier = 1;
@@ -270,24 +272,25 @@ def XLAGPU_AsyncCopyStartOp : XLAGPU_Op<"async_copy_start",
     [Pure,
      TypesMatchWith<"expected out_membars type to match membars type",
                     "membars", "out_membars", "$_self">,
-     TypesMatchWith<"expected out_buffer type to match buffer type",
-                    "buffer", "out_buffer", "$_self">,
+     TypesMatchWith<"expected out_buffers type to match buffers type",
+                    "buffers", "out_buffers", "$_self">,
+     SameVariadicOperandSize
     ]> {
   let summary = "";
 
   let arguments = (ins
-    AnyRankedTensor:$source,
-    AnyRankedTensor:$buffer,
+    Variadic<AnyRankedTensor>:$sources,
+    Variadic<AnyRankedTensor>:$buffers,
     AnyRankedTensor:$membars,
     Index:$offset,
     I1:$is_leader
   );
 
-  let results = (outs AnyRankedTensor:$out_buffer, AnyRankedTensor:$out_membars); 
+  let results = (outs Variadic<AnyRankedTensor>:$out_buffers, AnyRankedTensor:$out_membars); 
 
   let hasCustomAssemblyFormat = 1;
   let hasVerifier = 1;
-  let assemblyFormat = "$source `to` $buffer `[` $offset `]` `membars` $membars `leader` $is_leader attr-dict `:` type($source) `,` type($buffer) `,` type($membars)";
+  let assemblyFormat = "`(` $sources `)` `to` `(` $buffers `)` `[` $offset `]` `membars` $membars `leader` $is_leader attr-dict `:` `(` type($sources) `)` `,` `(` type($buffers) `)` `,` type($membars)";
 }
 
 def XLAGPU_AsyncCopyWaitOp : XLAGPU_Op<"async_copy_wait",
@@ -298,13 +301,13 @@ def XLAGPU_AsyncCopyWaitOp : XLAGPU_Op<"async_copy_wait",
   let summary = "";
 
   let arguments = (ins
-    AnyRankedTensor:$buffer,
+    Variadic<AnyRankedTensor>:$buffers,
     AnyRankedTensor:$membars,
     Index:$offset,
     I1:$is_leader
   );
 
-  let results = (outs AnyRankedTensor:$out_element, AnyRankedTensor:$out_membars); 
+  let results = (outs Variadic<AnyRankedTensor>:$out_elements, AnyRankedTensor:$out_membars); 
 
 //  let hasCustomAssemblyFormat = 1;
 //  let assemblyFormat = "$source `to` $buffer `[` $offset `]` `leader` $is_leader attr-dict `:` type($source), type()";

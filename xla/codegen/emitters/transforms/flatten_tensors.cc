@@ -807,7 +807,7 @@ struct RewriteSyncThreads : OpRewritePattern<gpu::SyncThreadsOp> {
     return mlir::success();
   }
 };
-
+/*
 struct RewriteAsyncCopyStart : OpRewritePattern<gpu::AsyncCopyStartOp> {
   using OpRewritePattern::OpRewritePattern;
 
@@ -864,6 +864,7 @@ struct RewriteAsyncCopyWait : OpRewritePattern<gpu::AsyncCopyWaitOp> {
     return llvm::success();
   }
 };
+*/
 
 class FlattenTensorsPass
     : public impl::FlattenTensorsPassBase<FlattenTensorsPass> {
@@ -890,9 +891,9 @@ class FlattenTensorsPass
         RewriteVectorFromElements,
         RewriteVectorInsert,
         RewriteVectorTransferRead,
-        RewriteCpuLoad,
-        RewriteAsyncCopyStart,
-        RewriteAsyncCopyWait
+        RewriteCpuLoad//,
+        //RewriteAsyncCopyStart,
+        //RewriteAsyncCopyWait
     >(mlir_context);
     // clang-format on
     ApplyIndexingOp::getCanonicalizationPatterns(patterns, mlir_context);

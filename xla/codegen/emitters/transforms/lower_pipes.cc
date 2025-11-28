@@ -79,7 +79,7 @@ limitations under the License.
 #include "xla/tsl/platform/status.h"
 #include "xla/util.h"
 #include "xla/xla_data.pb.h"
-#include "tsl/platform/protobuf.h"  // IWYU pragma: keep
+#include "tsl/platform/protobuf.h"            // IWYU pragma: keep
 #include "mlir/Dialect/LLVMIR/NVVMDialect.h"  // IWYU pragma: keep
 
 namespace xla {
@@ -119,18 +119,17 @@ namespace vector = ::mlir::vector;
 // that need a different is_align_stack value should continue to construct
 // the InlineAsmOp directly.
 static ml::InlineAsmOp CreateInlineAsm(OpBuilder& b, Location loc,
-                     TypeRange resultTypes,
-                     ValueRange operands,
-                     const std::string& asm_string,
-                     const std::string& constraints) {
+                                       TypeRange resultTypes,
+                                       ValueRange operands,
+                                       const std::string& asm_string,
+                                       const std::string& constraints) {
   auto asm_dialect =
-    ml::AsmDialectAttr::get(b.getContext(), ml::AsmDialect::AD_ATT);
-  return b.create<ml::InlineAsmOp>(loc, resultTypes, operands, asm_string,
-                   constraints,
-                   /*has_side_effects=*/true,
-                   /*is_align_stack=*/false,
-                   ml::TailCallKind::None, asm_dialect,
-                   /*operand_attrs=*/mlir::ArrayAttr());
+      ml::AsmDialectAttr::get(b.getContext(), ml::AsmDialect::AD_ATT);
+  return b.create<ml::InlineAsmOp>(
+      loc, resultTypes, operands, asm_string, constraints,
+      /*has_side_effects=*/true,
+      /*is_align_stack=*/false, ml::TailCallKind::None, asm_dialect,
+      /*operand_attrs=*/mlir::ArrayAttr());
 }
 
 ml::GlobalOp CreateGlobalOp(mlir::Attribute value,
@@ -184,14 +183,14 @@ mlir::Value CreateSharedMemory(mlir::Operation* op,
   mlir::ImplicitLocOpBuilder b(op->getLoc(), rewriter);
   auto global =
       CreateGlobalOp(mlir::Attribute{}, "shared_", shared_memory_shape, module,
-                      /*is_constant=*/false, kGPUSharedMemoryAddrSpace, b);
+                     /*is_constant=*/false, kGPUSharedMemoryAddrSpace, b);
 
   rewriter.setInsertionPoint(op);
   auto addr = rewriter.create<ml::AddressOfOp>(op->getLoc(), global);
   return rewriter
-          .create<ml::AddrSpaceCastOp>(
-              op->getLoc(), ml::LLVMPointerType::get(op->getContext()), addr)
-          .getResult();
+      .create<ml::AddrSpaceCastOp>(
+          op->getLoc(), ml::LLVMPointerType::get(op->getContext()), addr)
+      .getResult();
 }
 
 Value GetLinearIndex(ValueRange indices, mlir::ImplicitLocOpBuilder& b) {
@@ -237,7 +236,8 @@ std::tuple<Value, Value> GetSubByteIndex(Value linear_index, int bit_width,
   return {i8_index, sub_byte_shift};
 }
 
-ml::GEPOp CreateGep(Value tensor_ptr, mlir::RankedTensorType tensor_type, Value linear_index, mlir::ImplicitLocOpBuilder& b) {
+ml::GEPOp CreateGep(Value tensor_ptr, mlir::RankedTensorType tensor_type,
+                    Value linear_index, mlir::ImplicitLocOpBuilder& b) {
   auto element_type = tensor_type.getElementType();
   int64_t num_elements = tensor_type.getNumElements();
   std::optional<int> sub_byte_width = GetSubByteBitWidth(element_type);
@@ -257,7 +257,7 @@ ml::GEPOp CreateGep(Value tensor_ptr, mlir::RankedTensorType tensor_type, Value 
       ptr, array_type, tensor_ptr,
       llvm::SmallVector<mlir::LLVM::GEPArg>{0, linear_index});
   gep.setNoWrapFlags(mlir::LLVM::GEPNoWrapFlags::inbounds);
-  return gep; 
+  return gep;
 }
 
 ml::GEPOp CreateGep(TypedValue<mlir::RankedTensorType> tensor,
@@ -274,39 +274,37 @@ ml::GEPOp CreateGep(TypedValue<mlir::RankedTensorType> tensor,
   return CreateGep(tensor, GetLinearIndex(indices, b), b);
 }
 
-mlir::RankedTensorType GetMbarsTensorType(gpu::SharedMemoryPipeType ty, mlir::OpBuilder& b) {
+mlir::RankedTensorType GetMbarsTensorType(gpu::SharedMemoryPipeType ty,
+                                          mlir::OpBuilder& b) {
   return mlir::RankedTensorType::get({ty.getCapacity()}, b.getIntegerType(64));
 }
 
-int64_t TransactionSizeBytes(gpu::SharedMemoryPipeType pipe_ty) {
-  auto tensor_ty = pipe_ty.getElementType();
-  return
-      tensor_ty.getNumElements() *
-      tensor_ty.getElementType().getIntOrFloatBitWidth() /
-      CHAR_BIT;
-}
-
-struct ConvertAllocatePipe : public mlir::OpConversionPattern<gpu::AllocatePipeOp> {
+struct ConvertAllocatePipe
+    : public mlir::OpConversionPattern<gpu::AllocatePipeOp> {
   using OpConversionPattern::OpConversionPattern;
 
-  LogicalResult matchAndRewrite(gpu::AllocatePipeOp op, OneToNOpAdaptor adaptor,
-                                mlir::ConversionPatternRewriter& rewriter) const override {
+  LogicalResult matchAndRewrite(
+      gpu::AllocatePipeOp op, OneToNOpAdaptor adaptor,
+      mlir::ConversionPatternRewriter& rewriter) const override {
     auto pipe_ty = op.getResult().getType();
 
     SmallVector<Type> pipe_types;
     if (failed(getTypeConverter()->convertTypes(pipe_ty, pipe_types)))
       return failure();
-    
+
     mlir::ImplicitLocOpBuilder b(op->getLoc(), rewriter);
 
     auto read_idx = b.create<arith::ConstantIndexOp>(op->getLoc(), 0);
-    auto buffer = b.create<gpu::AllocateSharedOp>(
-        pipe_types[0]);
-    auto mbars = b.create<gpu::AllocateSharedOp>(
-        pipe_types[1]);
+    auto mbars = b.create<gpu::AllocateSharedOp>(pipe_types[0]);
 
-    auto mbars_init = b.create<gpu::InitMembarsOp>(mbars, op.getThreadCount(), op.getLeader());
-    SmallVector<Value> result{buffer, mbars_init, read_idx, op.getLeader()};
+    auto mbars_init = b.create<gpu::InitMembarsOp>(mbars, op.getThreadCount(),
+                                                   op.getLeader());
+    SmallVector<Value> result{mbars_init, read_idx, op.getLeader()};
+    for (int i = 3; i < pipe_types.size(); ++i) {
+      auto buf = b.create<gpu::AllocateSharedOp>(pipe_types[i]);
+      result.push_back(buf);
+    }
+
     rewriter.replaceOpWithMultiple(op, {result});
     return success();
   }
@@ -314,28 +312,34 @@ struct ConvertAllocatePipe : public mlir::OpConversionPattern<gpu::AllocatePipeO
 
 struct ConvertEnqueue : public mlir::OpConversionPattern<gpu::EnqueueOp> {
   using OpConversionPattern::OpConversionPattern;
- 
-  LogicalResult matchAndRewrite(gpu::EnqueueOp op, OneToNOpAdaptor adaptor,
-                                 mlir::ConversionPatternRewriter& rewriter) const override {
+
+  LogicalResult matchAndRewrite(
+      gpu::EnqueueOp op, OneToNOpAdaptor adaptor,
+      mlir::ConversionPatternRewriter& rewriter) const override {
     auto in_pipe = adaptor.getPipe();
-    Value buffer = in_pipe[0];
-    Value membars = in_pipe[1];
-    Value read_index = in_pipe[2];
-    Value leader = in_pipe[3];
-     
+    Value membars = in_pipe[0];
+    Value read_index = in_pipe[1];
+    Value leader = in_pipe[2];
+    ValueRange buffers = in_pipe.drop_front(3);
+
     mlir::ImplicitLocOpBuilder b(op.getLoc(), rewriter);
-    Value level = b.create<arith::ConstantIndexOp>(
-        op.getPipe().getType().getLevel());
-    Value capacity = b.create<arith::ConstantIndexOp>(
-        op.getPipe().getType().getCapacity());
+    Value level =
+        b.create<arith::ConstantIndexOp>(op.getPipe().getType().getLevel());
+    Value capacity =
+        b.create<arith::ConstantIndexOp>(op.getPipe().getType().getCapacity());
 
     // Compute the write index from the read index and the level.
     Value write_index = b.create<arith::RemUIOp>(
         b.create<arith::AddIOp>(read_index, level), capacity);
 
-    ValueRange out = b.create<gpu::AsyncCopyStartOp>(
-        op.getSource(), buffer, membars, write_index, leader).getResults();
-    SmallVector<Value> result {out[0], out[1], read_index, leader};
+    ValueRange out =
+        b.create<gpu::AsyncCopyStartOp>(mlir::TypeRange(buffers),
+                                        membars.getType(), op.getSources(),
+                                        buffers, membars, write_index, leader)
+            .getResults();
+    SmallVector<Value> result{out.back(), read_index, leader};
+    auto out_tensors = out.drop_back(1);
+    result.append(out_tensors.begin(), out_tensors.end());
     rewriter.replaceOpWithMultiple(op, {result});
     return success();
   }
@@ -343,39 +347,43 @@ struct ConvertEnqueue : public mlir::OpConversionPattern<gpu::EnqueueOp> {
 
 struct ConvertDequeue : public mlir::OpConversionPattern<gpu::DequeueOp> {
   using OpConversionPattern::OpConversionPattern;
- 
-  LogicalResult matchAndRewrite(gpu::DequeueOp op, OneToNOpAdaptor adaptor,
-                                mlir::ConversionPatternRewriter& rewriter) const override {
+
+  LogicalResult matchAndRewrite(
+      gpu::DequeueOp op, OneToNOpAdaptor adaptor,
+      mlir::ConversionPatternRewriter& rewriter) const override {
     auto in_pipe = adaptor.getPipe();
-    Value buffer = in_pipe[0];
-    Value membars = in_pipe[1];
-    Value read_index = in_pipe[2];
-    Value leader = in_pipe[3];
-     
+    Value membars = in_pipe[0];
+    Value read_index = in_pipe[1];
+    Value leader = in_pipe[2];
+    ValueRange buffers = in_pipe.drop_front(3);
+
     mlir::ImplicitLocOpBuilder b(op.getLoc(), rewriter);
     Value one = b.create<arith::ConstantIndexOp>(1);
-    Value capacity = b.create<arith::ConstantIndexOp>(
-        op.getPipe().getType().getCapacity());
+    Value capacity =
+        b.create<arith::ConstantIndexOp>(op.getPipe().getType().getCapacity());
     Value next_read_index = b.create<arith::RemUIOp>(
         b.create<arith::AddIOp>(read_index, one), capacity);
 
     ValueRange out = b.create<gpu::AsyncCopyWaitOp>(
-        op.getTensor().getType(), membars.getType(),
-        buffer, membars, read_index, leader).getResults();
-    SmallVector<Value> result_data {out[0]};
-    SmallVector<Value> result_pipe {buffer, out[1], next_read_index, leader};
-    rewriter.replaceOpWithMultiple(op, {result_data, result_pipe});
+                          mlir::TypeRange(op.getTensors()), membars.getType(),
+                          buffers, membars, read_index, leader)
+                         .getResults();
+    SmallVector<Value> result_pipe{out.back(), next_read_index, leader};
+    result_pipe.append(buffers.begin(), buffers.end());
+    rewriter.replaceOpWithMultiple(op, {buffers, result_pipe});
     return success();
   }
 };
 
-struct ConvertEnqueueUndef : public mlir::OpConversionPattern<gpu::EnqueueUndefOp> {
+struct ConvertEnqueueUndef
+    : public mlir::OpConversionPattern<gpu::EnqueueUndefOp> {
   using OpConversionPattern::OpConversionPattern;
 
-
-  LogicalResult matchAndRewrite(gpu::EnqueueUndefOp op, OneToNOpAdaptor adaptor,
-                                mlir::ConversionPatternRewriter& rewriter) const override {
-    rewriter.replaceOpWithMultiple(op, SmallVector<SmallVector<Value>>{adaptor.getPipe()});
+  LogicalResult matchAndRewrite(
+      gpu::EnqueueUndefOp op, OneToNOpAdaptor adaptor,
+      mlir::ConversionPatternRewriter& rewriter) const override {
+    rewriter.replaceOpWithMultiple(
+        op, SmallVector<SmallVector<Value>>{adaptor.getPipe()});
     return success();
   }
 };
@@ -396,40 +404,42 @@ class LowerPipesPass : public impl::LowerPipesPassBase<LowerPipesPass> {
     // Convert the SharedMemoryPipeType into the 4-tuple of types that make
     // up the unpacked pipe representation: (buffer tensor, mbars tensor,
     // read index, is_leader i1). This is a 1->N conversion.
-    typeConverter.addConversion(
-        [](gpu::SharedMemoryPipeType pipeTy, llvm::SmallVectorImpl<Type>& out)
-            -> std::optional<mlir::LogicalResult> {
-          MLIRContext* ctx = pipeTy.getContext();
-          // Element tensor type stored in the pipe, e.g. tensor<k x ...xf32>.
-          auto elem_ty = pipeTy.getElementType();
-          // Compute the buffer shape by making the capacity a separate leading
-          // dimension: buffer_shape = [capacity] + element_shape.
-          SmallVector<int64_t> buf_shape;
-          buf_shape.push_back(pipeTy.getCapacity());
-          buf_shape.append(elem_ty.getShape().begin(), elem_ty.getShape().end());
-          if (buf_shape.empty()) return std::nullopt;
-          Type buffer_ty = elem_ty.clone(buf_shape);
+    typeConverter.addConversion([](gpu::SharedMemoryPipeType pipeTy,
+                                   llvm::SmallVectorImpl<Type>& out)
+                                    -> std::optional<mlir::LogicalResult> {
+      MLIRContext* ctx = pipeTy.getContext();
+      Type mbars_ty = mlir::RankedTensorType::get(
+          {pipeTy.getCapacity()}, mlir::IntegerType::get(ctx, 64));
+      out.push_back(mbars_ty);
+      out.push_back(mlir::IndexType::get(ctx));
+      out.push_back(mlir::IntegerType::get(ctx, 1));
 
-          // mbars is a tensor of int64 with length = capacity.
-          Type mbars_ty = mlir::RankedTensorType::get({pipeTy.getCapacity()}, mlir::IntegerType::get(ctx, 64));
-
-          out.push_back(buffer_ty);
-          out.push_back(mbars_ty);
-          out.push_back(mlir::IndexType::get(ctx));
-          out.push_back(mlir::IntegerType::get(ctx, 1));
-          return mlir::success();
-        });
+      for (auto elem_ty : pipeTy.getElementTypes()) {
+        SmallVector<int64_t> buf_shape;
+        buf_shape.push_back(pipeTy.getCapacity());
+        buf_shape.append(elem_ty.getShape().begin(), elem_ty.getShape().end());
+        if (buf_shape.empty()) return std::nullopt;
+        Type buffer_ty = elem_ty.clone(buf_shape);
+        out.push_back(buffer_ty);
+      }
+      return mlir::success();
+    });
 
     typeConverter.addSourceMaterialization(
-        [](mlir::OpBuilder& builder, mlir::Type resultType, mlir::ValueRange inputs,
-           mlir::Location loc) -> mlir::Value {
-          return builder.create<UnrealizedConversionCastOp>(loc, resultType, inputs).getResult(0);
+        [](mlir::OpBuilder& builder, mlir::Type resultType,
+           mlir::ValueRange inputs, mlir::Location loc) -> mlir::Value {
+          return builder
+              .create<UnrealizedConversionCastOp>(loc, resultType, inputs)
+              .getResult(0);
         });
 
     typeConverter.addTargetMaterialization(
-        [](mlir::OpBuilder& builder, mlir::TypeRange resultTypes, mlir::ValueRange inputs,
+        [](mlir::OpBuilder& builder, mlir::TypeRange resultTypes,
+           mlir::ValueRange inputs,
            mlir::Location loc) -> SmallVector<mlir::Value> {
-          return builder.create<UnrealizedConversionCastOp>(loc, resultTypes, inputs).getResults();
+          return builder
+              .create<UnrealizedConversionCastOp>(loc, resultTypes, inputs)
+              .getResults();
         });
 
     // Build conversion target and patterns that replace the four pipe ops
@@ -438,15 +448,17 @@ class LowerPipesPass : public impl::LowerPipesPassBase<LowerPipesPass> {
     // Allow unknown ops to remain legal; only mark our pipe ops illegal so
     // that applyPartialConversion will rewrite them.
     target.markUnknownOpDynamicallyLegal([](Operation*) { return true; });
-    target.addIllegalOp<gpu::AllocatePipeOp, gpu::EnqueueOp, gpu::EnqueueUndefOp, gpu::DequeueOp>();
+    target.addIllegalOp<gpu::AllocatePipeOp, gpu::EnqueueOp,
+                        gpu::EnqueueUndefOp, gpu::DequeueOp>();
 
     mlir::RewritePatternSet patterns(ctx);
-    scf::populateSCFStructuralTypeConversionsAndLegality(typeConverter, patterns,
-                                                         target);
-    patterns.add<ConvertAllocatePipe, ConvertEnqueue, ConvertEnqueueUndef, ConvertDequeue>(
-        typeConverter, ctx);
+    scf::populateSCFStructuralTypeConversionsAndLegality(typeConverter,
+                                                         patterns, target);
+    patterns.add<ConvertAllocatePipe, ConvertEnqueue, ConvertEnqueueUndef,
+                 ConvertDequeue>(typeConverter, ctx);
 
-    if (mlir::failed(mlir::applyPartialConversion(getOperation(), target, std::move(patterns)))) {
+    if (mlir::failed(mlir::applyPartialConversion(getOperation(), target,
+                                                  std::move(patterns)))) {
       signalPassFailure();
     }
   }

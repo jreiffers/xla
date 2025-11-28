@@ -296,8 +296,9 @@ LogicalResult DequeueOp::inferReturnTypes(
     mlir::DictionaryAttr attributes, mlir::OpaqueProperties properties,
     mlir::RegionRange regions,
     mlir::SmallVectorImpl<Type>& inferredReturnTypes) {
-  auto in_pipe_ty =  mlir::cast<SharedMemoryPipeType>(operands[0].getType());
-  inferredReturnTypes.push_back(in_pipe_ty.getElementType());
+  auto in_pipe_ty = mlir::cast<SharedMemoryPipeType>(operands[0].getType());
+  inferredReturnTypes.append(in_pipe_ty.getElementTypes().begin(),
+                             in_pipe_ty.getElementTypes().end());
   inferredReturnTypes.push_back(in_pipe_ty.cloneWithLevel(in_pipe_ty.getLevel() - 1));
   return success();
 }

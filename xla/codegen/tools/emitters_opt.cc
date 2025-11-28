@@ -33,6 +33,7 @@ limitations under the License.
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/Dialect/Tensor/Transforms/BufferizableOpInterfaceImpl.h"
+#include "mlir/Dialect/UB/IR/UBOps.h"
 #include "mlir/Dialect/Vector/IR/VectorOps.h"
 #include "mlir/Pass/PassManager.h"
 #include "mlir/Pass/PassOptions.h"
@@ -63,7 +64,7 @@ int main(int argc, char** argv) {
       mlir::complex::ComplexDialect, mlir::func::FuncDialect,
       mlir::gpu::GPUDialect, mlir::math::MathDialect, mlir::mhlo::MhloDialect,
       mlir::mhlo::MhloDialect, mlir::scf::SCFDialect,
-      mlir::tensor::TensorDialect, mlir::vector::VectorDialect, xla::XlaDialect,
+      mlir::tensor::TensorDialect, mlir::ub::UBDialect, mlir::vector::VectorDialect, xla::XlaDialect,
       xla::cpu::XlaCpuDialect, xla::gpu::XlaGpuDialect,
       xla::xtile::XTileDialect, mlir::stablehlo::StablehloDialect>();
   mlir::func::registerAllExtensions(registry);

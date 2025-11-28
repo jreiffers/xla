@@ -284,11 +284,11 @@ struct PipelineTensorExtract
       llvm::SmallVector<OpFoldResult> strides {b.getIndexAttr(1)};
       auto slice = b.create<mlir::tensor::ExtractSliceOp>(
           tx_ty, op.getTensor(), offsets, sizes, strides);
-      pipe = b.create<gpu::EnqueueOp>(pipe, slice);
+      pipe = b.create<gpu::EnqueueOp>(pipe, mlir::ValueRange(slice));
     }
 
     Value dequeued;
-    loop.replaceWithAdditionalYields(
+    (void) loop.replaceWithAdditionalYields(
         rewriter, pipe,
         /*replaceInitOperandUsesInLoop=*/false,
         [&](mlir::OpBuilder& yield_b, mlir::Location yield_loc,
@@ -296,10 +296,8 @@ struct PipelineTensorExtract
           mlir::ImplicitLocOpBuilder dequeue_builder(yield_loc, yield_b);
           dequeue_builder.setInsertionPointToStart(loop.getBody());
           Value orig_pipe = bbarg[0];
-          // TODO: type inference
-          auto value_and_pipe = dequeue_builder.create<gpu::DequeueOp>(
-              empty_pipe_ty.getElementType(), empty_pipe_ty.cloneWithLevel(1),
-              orig_pipe).getResults();
+          auto value_and_pipe =
+            dequeue_builder.create<gpu::DequeueOp>(orig_pipe).getResults();
           dequeued = value_and_pipe[0];
           Value pipe = value_and_pipe[1];
 
@@ -322,7 +320,8 @@ struct PipelineTensorExtract
                 llvm::SmallVector<OpFoldResult> strides {then_b.getIndexAttr(1)};
                 auto slice = then_b.create<mlir::tensor::ExtractSliceOp>(
                     then_loc, tx_ty, op.getTensor(), offsets, sizes, strides);
-                Value new_pipe = then_b.create<gpu::EnqueueOp>(then_loc, pipe, slice);
+                Value new_pipe =
+                    then_b.create<gpu::EnqueueOp>(then_loc, pipe, mlir::ValueRange(slice));
                 then_b.create<scf::YieldOp>(then_loc, new_pipe);
               },
               /*elseBuilder=*/
