@@ -230,7 +230,15 @@ message DynamicMemcpyConfig {
   repeated int64 dst_offset_bytes = 3;
 }
 
-// Next id: 8
+message LoopFusionConfig {
+  // If non-zero, overrides the default vectorization heuristic.
+  int32 vectorization_override = 1;
+
+  // If non-zero, overrides the default number of grid-sized iterations.
+  int64 grid_stride_loop_size = 2;
+}
+
+// Next id: 9
 message FusionBackendConfig {
   // kLoop, kInput, or kOutput (from HloInstruction::FusionKind), or your own
   // custom string.
@@ -259,6 +267,8 @@ message FusionBackendConfig {
   CuDnnFusionConfig cudnn_fusion_config = 5;
 
   DynamicMemcpyConfig dynamic_memcpy_config = 7;
+
+  LoopFusionConfig loop_fusion_config = 8;
 
   reserved 3;
 }

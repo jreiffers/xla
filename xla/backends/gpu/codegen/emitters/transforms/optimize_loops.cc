@@ -78,6 +78,14 @@ int GetUnrollingFactor(mlir::scf::ForOp op) {
     return 1;
   }
 
+  // If this is a loop that pipelines loads, don't unroll.
+  // TODO: Check how we need to adjust unrolling rules for pipelined loops.
+  if (absl::c_any_of(op.getResultTypes(), [](mlir::Type type) {
+        return mlir::isa<gpu::SharedMemoryPipeType>(type);
+      })) {
+    return 1;
+  }
+
   int64_t trip_count = ub.getSExtValue();
   constexpr int kMaxSize = 400;  // Chosen empirically.
 

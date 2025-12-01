@@ -1032,8 +1032,16 @@ LaunchDimensionsConfig ComputeLoopFusionConfig(
   CHECK(absl::has_single_bit(static_cast<uint64_t>(unroll_factor)));
   VLOG(2) << "Unroll factor: " << unroll_factor;
 
-  // TODO: Do this properly.
-  LaunchDimensionsConfig launch_config{unroll_factor, 4};
+  const LoopFusionConfig& config =
+      analysis.fusion_backend_config().loop_fusion_config();
+  if (config.vectorization_override() != 0) {
+    unroll_factor = config.vectorization_override();
+  }
+
+  // TODO: Add a heuristic for grid_stride_loop_size.
+  int grid_iterations = config.grid_stride_loop_size() != 0 ? config.grid_stride_loop_size() : 1;
+
+  LaunchDimensionsConfig launch_config{unroll_factor, grid_iterations};
   return launch_config;
 }
 

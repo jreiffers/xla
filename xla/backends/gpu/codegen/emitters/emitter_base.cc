@@ -470,8 +470,7 @@ void AddLoopTransformationPasses(mlir::OpPassManager& pm,
   pm.addPass(mlir::createLoopInvariantCodeMotionPass());
   pm.addNestedPass<FuncOp>(emitters::CreatePipelineLoadsPass());
   pm.addNestedPass<FuncOp>(emitters::CreateVectorizeLoadsAndStoresPass(device));
-  // TODO: Check how we need to adjust unrolling rules for pipelined loops.
-  // pm.addNestedPass<FuncOp>(CreateOptimizeLoopsPass());
+  pm.addNestedPass<FuncOp>(CreateOptimizeLoopsPass());
   pm.addPass(mlir::createCanonicalizerPass());
   pm.addPass(mlir::createCSEPass());
 }
